@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { JenjangKurikulum, MasterKelas } from '../../types';
-import { getMasterKelasList } from '../../utils/kelas';
+import { getMasterKelasList, getNextClassTarget, inferJenjangFromName } from '../../utils/kelas';
 
 export const KelolaKelasPanel: React.FC = () => {
   const { db, updateDb, addToast, triggerCelebration } = useApp();
@@ -222,8 +222,10 @@ export const KelolaKelasPanel: React.FC = () => {
             (s) => s.status_siswa === 'Aktif' && s.kelas_aktif === k.nama_kelas
           ).length;
           const isEditing = editingId === k.kelas_id;
-          const nextLabel =
-            idx < kelasList.length - 1 ? `→ ${kelasList[idx + 1].nama_kelas}` : '→ Lulus (Ke SD)';
+          const target = getNextClassTarget(db, k.nama_kelas);
+          const nextLabel = target.isFinal
+            ? 'Keputusan Guru/Admin (Tinggal Kelas atau Lulus ke SD)'
+            : `→ ${target.nextClassName}`;
 
           return (
             <div
@@ -351,8 +353,14 @@ export const KelolaKelasPanel: React.FC = () => {
           <input
             type="text"
             value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            placeholder="Contoh: Kelompok Bermain / TK A1 / Kelas Tahfidz"
+            onChange={(e) => {
+              const val = e.target.value;
+              setNewName(val);
+              if (val.trim()) {
+                setNewJenjang(inferJenjangFromName(val));
+              }
+            }}
+            placeholder="Contoh: Kelompok Bermain / Kelas A1 / Kelas B2"
             className="isian-kontrol min-h-[38px] text-xs flex-1 min-w-[200px]"
           />
           <select

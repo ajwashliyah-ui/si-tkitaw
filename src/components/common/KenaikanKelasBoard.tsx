@@ -450,12 +450,13 @@ export const KenaikanKelasBoard: React.FC<KenaikanKelasBoardProps> = ({
     const items = columnGroups[col] || [];
     const allChecked = items.length > 0 && items.every((s) => selectedIds.includes(s.siswa_id));
     const isLulusCol = col === 'Lulus';
-    const prevCol = colIndex > 0 ? kelasList[colIndex - 1]?.nama_kelas : null;
-    const nextCol = isLulusCol
-      ? null
-      : colIndex < kelasList.length - 1
-      ? kelasList[colIndex + 1]?.nama_kelas
-      : 'Lulus';
+    const currentMeta = !isLulusCol ? kelasList[colIndex] : null;
+    const colTarget = !isLulusCol ? getNextClassTarget(db, col) : null;
+    const nextCol = isLulusCol ? null : colTarget?.nextClassName || 'Lulus';
+    const prevCol =
+      !isLulusCol && currentMeta?.jenjang === 'B'
+        ? kelasList.find((item) => item.jenjang === 'A')?.nama_kelas || null
+        : null;
 
     return (
       <div
@@ -815,13 +816,11 @@ export const KenaikanKelasBoard: React.FC<KenaikanKelasBoardProps> = ({
               const target = getNextClassTarget(db, k.nama_kelas);
               const accent =
                 k.jenjang === 'B' ? 'bg-[#0284c7]' : idx % 2 === 0 ? 'bg-[#176238]' : 'bg-[#0f766e]';
-              return renderColumn(
-                k.nama_kelas,
-                k.nama_kelas,
-                `Konfirmasi ${target.label.toLowerCase()} atau tinggal di ${k.nama_kelas}`,
-                accent,
-                idx
-              );
+              const subtitle =
+                k.jenjang === 'B'
+                  ? `Keputusan Guru/Admin: Lulus ke SD atau tinggal di ${k.nama_kelas}`
+                  : `Konfirmasi ${target.label.toLowerCase()} atau tinggal di ${k.nama_kelas}`;
+              return renderColumn(k.nama_kelas, k.nama_kelas, subtitle, accent, idx);
             })}
             {renderColumn(
               'Lulus',

@@ -4,7 +4,7 @@ import { useApp } from '../../context/AppContext';
 import { RiwayatKelas, TahunAjaran } from '../../types';
 import { KenaikanKelasBoard } from '../common/KenaikanKelasBoard';
 import { KelolaKelasPanel } from './KelolaKelasPanel';
-import { getMasterKelasList, getNextClassTarget } from '../../utils/kelas';
+import { getMasterKelasList, getYearEndOutcome } from '../../utils/kelas';
 import { purgeStudentsFromDatabase } from '../../utils/studentCleanup';
 
 export const AdminKenaikanKelasView: React.FC = () => {
@@ -37,20 +37,16 @@ export const AdminKenaikanKelasView: React.FC = () => {
     let naikCount = 0;
     let lulusCount = 0;
     let tinggalCount = 0;
+    let menungguCount = 0;
 
     for (const s of active) {
-      if (s.keputusan_kenaikan === 'TINGGAL_KELAS') {
-        tinggalCount += 1;
-        continue;
-      }
-      const target = getNextClassTarget(db, s.kelas_aktif);
-      if (target.isFinal || s.keputusan_kenaikan === 'LULUS_KE_SD') {
-        lulusCount += 1;
-      } else {
-        naikCount += 1;
-      }
+      const res = getYearEndOutcome(db, s);
+      if (res.outcome === 'NAIK_KELAS') naikCount += 1;
+      else if (res.outcome === 'LULUS_KE_SD') lulusCount += 1;
+      else if (res.outcome === 'TINGGAL_KELAS') tinggalCount += 1;
+      else menungguCount += 1;
     }
-    return { naikCount, lulusCount, tinggalCount };
+    return { naikCount, lulusCount, tinggalCount, menungguCount };
   }, [db]);
 
   const handleAddTahunAjaran = async (e: React.FormEvent) => {
@@ -104,10 +100,8 @@ export const AdminKenaikanKelasView: React.FC = () => {
 
     const graduatedIds: string[] = [];
     for (const s of db.siswa) {
-      if (s.status_siswa !== 'Aktif') continue;
-      if (s.keputusan_kenaikan === 'TINGGAL_KELAS') continue;
-      const target = getNextClassTarget(db, s.kelas_aktif);
-      if (target.isFinal || s.keputusan_kenaikan === 'LULUS_KE_SD') {
+      const res = getYearEndOutcome(db, s);
+      if (res.outcome === 'LULUS_KE_SD') {
         graduatedIds.push(s.siswa_id);
       }
     }
@@ -123,21 +117,29 @@ export const AdminKenaikanKelasView: React.FC = () => {
         const updatedRiwayat: RiwayatKelas[] = prev.riwayatKelas.map((r) => {
           if (r.ta_id === activeTa?.ta_id && r.status_akhir === 'Berjalan') {
             const student = siswaMap.get(r.siswa_id);
-            if (student?.keputusan_kenaikan === 'TINGGAL_KELAS') {
+            if (!student) return r;
+            const res = getYearEndOutcome(prev, student);
+            if (res.outcome === 'TINGGAL_KELAS') {
               return {
                 ...r,
                 status_akhir: 'Tinggal Kelas',
                 catatan: student.catatan_kenaikan || `Tinggal di ${r.kelas}`,
               };
             }
-            const target = getNextClassTarget(prev, r.kelas);
-            if (target.isFinal || student?.keputusan_kenaikan === 'LULUS_KE_SD') {
+            if (res.outcome === 'LULUS_KE_SD') {
               return { ...r, status_akhir: 'Lulus', catatan: 'Lulus · Melanjutkan ke SD' };
+            }
+            if (res.outcome === 'NAIK_KELAS') {
+              return {
+                ...r,
+                status_akhir: 'Naik Kelas',
+                catatan: `Naik ke ${res.nextClassName}`,
+              };
             }
             return {
               ...r,
-              status_akhir: 'Naik Kelas',
-              catatan: `Naik ke ${target.nextClassName}`,
+              status_akhir: 'Tinggal Kelas',
+              catatan: `Menunggu keputusan kelulusan di ${r.kelas}`,
             };
           }
           return r;
@@ -147,7 +149,9 @@ export const AdminKenaikanKelasView: React.FC = () => {
         const batchGradIds: string[] = [];
         const updatedSiswa = prev.siswa.map((s) => {
           if (s.status_siswa !== 'Aktif') return s;
-          if (s.keputusan_kenaikan === 'TINGGAL_KELAS') {
+          const res = getYearEndOutcome(prev, s);
+
+          if (res.outcome === 'TINGGAL_KELAS') {
             if (nextTa && nextTa.ta_id !== activeTa?.ta_id) {
               newRiwayatRows.push({
                 riwayat_id: `RWY-${Date.now()}-${s.siswa_id}`,
@@ -165,8 +169,24 @@ export const AdminKenaikanKelasView: React.FC = () => {
               keputusan_kenaikan: 'BELUM_DITENTUKAN' as const,
             };
           }
-          const target = getNextClassTarget(prev, s.kelas_aktif);
-          if (target.isFinal || s.keputusan_kenaikan === 'LULUS_KE_SD') {
+
+          if (res.outcome === 'TETAP_MENUNGGU_KEPUTUSAN') {
+            if (nextTa && nextTa.ta_id !== activeTa?.ta_id) {
+              newRiwayatRows.push({
+                riwayat_id: `RWY-${Date.now()}-${s.siswa_id}`,
+                siswa_id: s.siswa_id,
+                ta_id: nextTa.ta_id,
+                nama_ta: nextTa.nama_ta,
+                kelas: s.kelas_aktif,
+                wali_kelas_id: waliMap.get(s.kelas_aktif) || '',
+                status_akhir: 'Berjalan',
+                catatan: s.catatan_kenaikan || `Tetap di ${s.kelas_aktif} (menunggu keputusan)`,
+              });
+            }
+            return s;
+          }
+
+          if (res.outcome === 'LULUS_KE_SD') {
             batchGradIds.push(s.siswa_id);
             return {
               ...s,
@@ -176,20 +196,21 @@ export const AdminKenaikanKelasView: React.FC = () => {
               catatan_kenaikan: s.catatan_kenaikan || 'Melanjutkan ke SD',
             };
           }
+
           if (nextTa) {
             newRiwayatRows.push({
               riwayat_id: `RWY-${Date.now()}-${s.siswa_id}`,
               siswa_id: s.siswa_id,
               ta_id: nextTa.ta_id,
               nama_ta: nextTa.nama_ta,
-              kelas: target.nextClassName,
-              wali_kelas_id: waliMap.get(target.nextClassName) || '',
+              kelas: res.nextClassName,
+              wali_kelas_id: waliMap.get(res.nextClassName) || '',
               status_akhir: 'Berjalan',
             });
           }
           return {
             ...s,
-            kelas_aktif: target.nextClassName,
+            kelas_aktif: res.nextClassName,
             keputusan_kenaikan: 'BELUM_DITENTUKAN' as const,
           };
         });
@@ -454,15 +475,15 @@ export const AdminKenaikanKelasView: React.FC = () => {
             <h2 className="text-lg text-[#a33a25]">Proses kenaikan akhir tahun ajaran</h2>
           </div>
 
-          <div className="grid grid-cols-3 gap-2.5">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
             <div className="p-3 rounded-xl bg-[#dcebd2]/60 border border-[#d9d5c0]">
-              <p className="text-[11px] text-[#0f4527] font-bold">Naik ke jenjang berikutnya</p>
+              <p className="text-[11px] text-[#0f4527] font-bold">Kelas A naik</p>
               <p className="text-2xl font-display font-semibold text-[#0f4527] font-mono-tabular mt-1">
                 {promotionSummary.naikCount}
               </p>
             </div>
             <div className="p-3 rounded-xl bg-[#fdeab5]/70 border border-[#f2b632]">
-              <p className="text-[11px] text-[#7c4d03] font-bold">Lulus (Ke SD)</p>
+              <p className="text-[11px] text-[#7c4d03] font-bold">Lulus ke SD</p>
               <p className="text-2xl font-display font-semibold text-[#7c4d03] font-mono-tabular mt-1">
                 {promotionSummary.lulusCount}
               </p>
@@ -473,17 +494,26 @@ export const AdminKenaikanKelasView: React.FC = () => {
                 {promotionSummary.tinggalCount}
               </p>
             </div>
+            <div className="p-3 rounded-xl bg-[#fbf6e7] border border-[#d9d5c0]">
+              <p className="text-[11px] text-[#55665a] font-bold">Kelas B menunggu</p>
+              <p className="text-2xl font-display font-semibold text-[#1d2b21] font-mono-tabular mt-1">
+                {promotionSummary.menungguCount}
+              </p>
+            </div>
           </div>
 
           <p className="text-xs text-[#55665a] m-0">
-            Alur kelas aktif:{' '}
+            Alur kelas:{' '}
             <strong className="text-[#0f4527]">
-              {kelasList.map((k) => k.nama_kelas).join(' → ')} → Lulus (SD)
+              {kelasList.filter((k) => k.jenjang === 'A').map((k) => k.nama_kelas).join(' / ') || 'Jenjang A'}
+              {' → '}
+              {kelasList.filter((k) => k.jenjang === 'B').map((k) => k.nama_kelas).join(' / ') || 'Jenjang B'}
+              {' → Lulus ke SD (sesuai keputusan Guru/Admin)'}
             </strong>
           </p>
 
           <p className="text-sm text-[#1d2b21] leading-relaxed">
-            Tahun ajaran berjalan: <strong>{activeTa?.nama_ta || '-'}</strong>. Proses massal akan mengikuti urutan kelas custom dan konfirmasi di papan atas: murid yang ditandai <strong>Tinggal Kelas</strong> tetap berada di kelasnya.
+            Tahun ajaran berjalan: <strong>{activeTa?.nama_ta || '-'}</strong>. Murid Kelas A otomatis naik ke Kelas B (kecuali ditandai <strong>Tinggal Kelas</strong>). Murid Kelas B tidak berpindah antarkelas B dan tetap di kelasnya hingga Guru atau Admin memutuskan <strong>Tinggal Kelas</strong> atau <strong>Lulus ke SD</strong>.
           </p>
 
           <button

@@ -614,9 +614,20 @@ function prosesKenaikanKelasOtomatis() {
     .filter(function(k) { return k.aktif !== false; })
     .sort(function(a, b) { return Number(a.urutan || 0) - Number(b.urutan || 0); });
   if (!kelasList.length) {
-    kelasList = [{ nama_kelas: 'Kelas A' }, { nama_kelas: 'Kelas B' }];
+    kelasList = [
+      { nama_kelas: 'Kelas A', jenjang: 'A' },
+      { nama_kelas: 'Kelas B', jenjang: 'B' }
+    ];
   }
-  var naik = 0, lulus = 0, tinggal = 0;
+  var firstBName = '';
+  var jenjangMap = {};
+  for (var j = 0; j < kelasList.length; j++) {
+    var kName = String(kelasList[j].nama_kelas || '');
+    var kJenjang = String(kelasList[j].jenjang || '') === 'B' ? 'B' : 'A';
+    jenjangMap[kName.toLowerCase()] = kJenjang;
+    if (kJenjang === 'B' && !firstBName) firstBName = kName;
+  }
+  var naik = 0, lulus = 0, tinggal = 0, menunggu = 0;
   var graduatedMap = {};
   for (var i = 1; i < sRows.length; i++) {
     if (sRows[i][7] !== 'Aktif') continue;
@@ -627,17 +638,19 @@ function prosesKenaikanKelasOtomatis() {
       continue;
     }
     var curClass = String(sRows[i][6] || '');
-    var idx = -1;
-    for (var j = 0; j < kelasList.length; j++) {
-      if (String(kelasList[j].nama_kelas) === curClass) { idx = j; break; }
+    var curJenjang = jenjangMap[curClass.toLowerCase()];
+    if (!curJenjang) {
+      curJenjang = /\\b(?:kelas\\s*|tk\\s*|kelompok\\s*)?b\\d*\\b|lanjut|sd|tahfidz/i.test(curClass) ? 'B' : 'A';
     }
-    if (keputusan !== 'LULUS_KE_SD' && idx >= 0 && idx < kelasList.length - 1) {
-      sSheet.getRange(i + 1, 7).setValue(kelasList[idx + 1].nama_kelas);
-      if (sRows[i].length >= 11) sSheet.getRange(i + 1, 11).setValue('BELUM_DITENTUKAN');
-      naik++;
-    } else if (keputusan === 'LULUS_KE_SD' || idx === kelasList.length - 1 || curClass === 'Kelas B') {
+    if (keputusan === 'LULUS_KE_SD') {
       if (sid) graduatedMap[sid] = true;
       lulus++;
+    } else if (curJenjang === 'B') {
+      menunggu++;
+    } else if (firstBName) {
+      sSheet.getRange(i + 1, 7).setValue(firstBName);
+      if (sRows[i].length >= 11) sSheet.getRange(i + 1, 11).setValue('BELUM_DITENTUKAN');
+      naik++;
     }
   }
   var purgeSheets = [
@@ -665,7 +678,7 @@ function prosesKenaikanKelasOtomatis() {
       }
     }
   }
-  return { naik: naik, lulus: lulus, tinggal: tinggal, purged: Object.keys(graduatedMap).length };
+  return { naik: naik, lulus: lulus, tinggal: tinggal, menunggu: menunggu, purged: Object.keys(graduatedMap).length };
 }
 
 function exportAllSheetsJson_() {

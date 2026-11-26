@@ -55,7 +55,7 @@ export function getMasterKelasList(
 
 export function inferJenjangFromName(namaKelas: string): JenjangKurikulum {
   const lower = namaKelas.toLowerCase();
-  if (/\bb\b|kelas\s*b|tk\s*b|lanjut|sd|tahfidz/.test(lower)) return 'B';
+  if (/\b(?:kelas\s*|tk\s*|kelompok\s*)?b\d*\b|lanjut|sd|tahfidz/.test(lower)) return 'B';
   return 'A';
 }
 
@@ -82,14 +82,58 @@ export function getNextClassTarget(
   kelasName: string
 ): { isFinal: boolean; nextClassName: string; label: string } {
   const ordered = getMasterKelasList(db);
-  const idx = ordered.findIndex(
-    (k) => k.nama_kelas.toLowerCase() === String(kelasName || '').trim().toLowerCase()
-  );
-  if (idx >= 0 && idx < ordered.length - 1) {
-    const next = ordered[idx + 1].nama_kelas;
-    return { isFinal: false, nextClassName: next, label: `Lanjut ke ${next}` };
+  const currentMeta = getKelasMeta(db, kelasName);
+  const currentIsB = currentMeta ? currentMeta.jenjang === 'B' : isKelasLanjutan(db, kelasName);
+
+  // Semua kelas jenjang B (termasuk rombel paralel seperti B1, B2) tidak naik ke kelas B lain;
+  // keputusan akhir hanya Tinggal Kelas atau Lulus ke SD dari Guru/Admin.
+  if (currentIsB) {
+    return { isFinal: true, nextClassName: 'Lulus', label: 'Lulus (Lanjut ke SD)' };
   }
+
+  // Kelas jenjang A naik ke kelas jenjang B pertama yang aktif (bukan sesama kelas A).
+  const firstJenjangB = ordered.find((k) => k.jenjang === 'B');
+  if (firstJenjangB) {
+    return {
+      isFinal: false,
+      nextClassName: firstJenjangB.nama_kelas,
+      label: `Lanjut ke ${firstJenjangB.nama_kelas}`,
+    };
+  }
+
   return { isFinal: true, nextClassName: 'Lulus', label: 'Lulus (Lanjut ke SD)' };
+}
+
+export type YearEndOutcome =
+  | 'NAIK_KELAS'
+  | 'LULUS_KE_SD'
+  | 'TINGGAL_KELAS'
+  | 'TETAP_MENUNGGU_KEPUTUSAN';
+
+export function getYearEndOutcome(
+  db: Pick<SchoolDatabase, 'masterKelas' | 'siswa'>,
+  siswa: {
+    kelas_aktif: string;
+    status_siswa?: string;
+    keputusan_kenaikan?: KeputusanKenaikan;
+  }
+): { outcome: YearEndOutcome; nextClassName: string } {
+  if (siswa.status_siswa !== 'Aktif' || siswa.kelas_aktif === 'Lulus') {
+    return { outcome: 'TETAP_MENUNGGU_KEPUTUSAN', nextClassName: siswa.kelas_aktif };
+  }
+  if (siswa.keputusan_kenaikan === 'TINGGAL_KELAS') {
+    return { outcome: 'TINGGAL_KELAS', nextClassName: siswa.kelas_aktif };
+  }
+  if (siswa.keputusan_kenaikan === 'LULUS_KE_SD') {
+    return { outcome: 'LULUS_KE_SD', nextClassName: 'Lulus' };
+  }
+  const target = getNextClassTarget(db, siswa.kelas_aktif);
+  if (target.isFinal) {
+    // Kelas B menunggu keputusan resmi Guru/Admin (Tinggal Kelas atau Lulus ke SD).
+    return { outcome: 'TETAP_MENUNGGU_KEPUTUSAN', nextClassName: siswa.kelas_aktif };
+  }
+  // Kelas A tetap otomatis naik ke jenjang B kecuali ditandai Tinggal Kelas.
+  return { outcome: 'NAIK_KELAS', nextClassName: target.nextClassName };
 }
 
 export function isPromoteDecision(keputusan?: KeputusanKenaikan): boolean {

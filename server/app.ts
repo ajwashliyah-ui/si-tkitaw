@@ -123,6 +123,22 @@ function sanitizeDbForRole(db: SchoolDatabase, role: UserRole): SchoolDatabase {
   };
 }
 
+function applyDefaultGasUrl(db: SchoolDatabase): SchoolDatabase {
+  if (!isAllowedGasUrl(db.pengaturanSekolah?.gas_webapp_url)) {
+    const fallbackUrl = readDefaultGasUrl();
+    if (fallbackUrl) {
+      return {
+        ...db,
+        pengaturanSekolah: {
+          ...db.pengaturanSekolah,
+          gas_webapp_url: fallbackUrl,
+        },
+      };
+    }
+  }
+  return db;
+}
+
 function readDb(): SchoolDatabase {
   try {
     if (!fs.existsSync(DATA_DIR)) {
@@ -143,17 +159,18 @@ function readDb(): SchoolDatabase {
       if (!seed) {
         seed = createInitialSeedDatabase();
       }
+      seed = applyDefaultGasUrl(seed);
       memoryDbCache = seed;
       fs.writeFileSync(DB_FILE, JSON.stringify(seed, null, 2), 'utf8');
       return seed;
     }
     const raw = fs.readFileSync(DB_FILE, 'utf8');
-    const parsed = JSON.parse(raw) as SchoolDatabase;
+    const parsed = applyDefaultGasUrl(JSON.parse(raw) as SchoolDatabase);
     memoryDbCache = parsed;
     return parsed;
   } catch {
     if (!memoryDbCache) {
-      memoryDbCache = createInitialSeedDatabase();
+      memoryDbCache = applyDefaultGasUrl(createInitialSeedDatabase());
     }
     return memoryDbCache;
   }
@@ -180,6 +197,7 @@ function getAuthenticatedSession(req: express.Request): SessionEntry | null {
 
 function isAllowedGasUrl(rawUrl?: string): boolean {
   if (!rawUrl || !rawUrl.trim()) return false;
+  if (rawUrl.includes('GANTI_DENGAN_DEPLOYMENT_ID_ANDA')) return false;
   try {
     const parsed = new URL(rawUrl.trim());
     return (
@@ -191,13 +209,38 @@ function isAllowedGasUrl(rawUrl?: string): boolean {
   }
 }
 
+function readDefaultGasUrl(): string {
+  const fromEnv = process.env.GAS_WEBAPP_URL?.trim();
+  if (isAllowedGasUrl(fromEnv)) return fromEnv!;
+
+  const candidates = [
+    path.resolve(process.cwd(), 'config.js'),
+    path.resolve(process.cwd(), 'dist', 'config.js'),
+    path.resolve(process.cwd(), 'public', 'config.js'),
+  ];
+  for (const filePath of candidates) {
+    try {
+      if (!fs.existsSync(filePath)) continue;
+      const content = fs.readFileSync(filePath, 'utf8');
+      const match = content.match(/GAS_WEBAPP_URL\s*:\s*["'](https:\/\/script\.google\.com\/[^"']+)["']/);
+      if (match?.[1] && isAllowedGasUrl(match[1])) {
+        return match[1].trim();
+      }
+    } catch {
+      // Ignore unreadable config file
+    }
+  }
+  return '';
+}
+
 async function callGasBridge(
   gasUrl: string,
   syncKey: string,
   action: string,
   payload: unknown = {}
 ): Promise<{ ok: boolean; data?: any; school?: string; sheets?: number; error?: string }> {
-  if (!isAllowedGasUrl(gasUrl)) {
+  const effectiveUrl = isAllowedGasUrl(gasUrl) ? gasUrl.trim() : readDefaultGasUrl();
+  if (!isAllowedGasUrl(effectiveUrl)) {
     return {
       ok: false,
       error: 'URL Web App harus menggunakan alamat resmi https://script.google.com/macros/s/.../exec',
@@ -206,7 +249,7 @@ async function callGasBridge(
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
-    const res = await fetch(gasUrl.trim(), {
+    const res = await fetch(effectiveUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({
@@ -219,6 +262,13 @@ async function callGasBridge(
     });
     clearTimeout(timer);
     const text = await res.text();
+    if (text.trim().startsWith('<')) {
+      return {
+        ok: false,
+        error:
+          'Google Apps Script mengembalikan halaman HTML. Pastikan Deploy Web App menggunakan "Who has access: Anyone" dan versi deployment terbaru.',
+      };
+    }
     const json = JSON.parse(text);
     return json;
   } catch (err) {
@@ -230,7 +280,9 @@ async function callGasBridge(
 }
 
 async function triggerAutoSyncToSheets(db: SchoolDatabase): Promise<void> {
-  const url = db.pengaturanSekolah.gas_webapp_url;
+  const url = isAllowedGasUrl(db.pengaturanSekolah.gas_webapp_url)
+    ? db.pengaturanSekolah.gas_webapp_url
+    : readDefaultGasUrl();
   if (!isAllowedGasUrl(url)) return;
   const syncKey = db.pengaturanSekolah.gas_sync_key || 'WASHLIYAH_SYNC_2026';
   const res = await callGasBridge(url, syncKey, 'syncFullDb', db);
@@ -362,7 +414,7 @@ export function createApiApp(): express.Express {
   });
 
   // Admin-only account creation for Guru & Orang Tua (strictly preserves single Admin)
-  app.post('/api/admin/users', (req, res) => {
+  app.post('/api/admin/users', async (req, res) => {
     const session = getAuthenticatedSession(req);
     if (!session || session.user.role !== 'Admin') {
       res.status(403).json({ ok: false, error: 'Hanya Admin yang dapat membuat akun baru.' });
@@ -425,13 +477,13 @@ export function createApiApp(): express.Express {
 
     db.users.push(newUser);
     writeDb(db);
-    void triggerAutoSyncToSheets(db);
+    await triggerAutoSyncToSheets(db);
 
-    res.json({ ok: true, user: newUser });
+    res.json({ ok: true, user: newUser, syncStatus });
   });
 
   // Admin-only account deletion (protects Admin accounts and detaches student/class links)
-  app.delete('/api/admin/users', (req, res) => {
+  app.delete('/api/admin/users', async (req, res) => {
     const session = getAuthenticatedSession(req);
     if (!session || session.user.role !== 'Admin') {
       res.status(403).json({ ok: false, error: 'Hanya Admin yang dapat menghapus akun pengguna.' });
@@ -465,7 +517,7 @@ export function createApiApp(): express.Express {
     );
 
     writeDb(db);
-    void triggerAutoSyncToSheets(db);
+    await triggerAutoSyncToSheets(db);
 
     res.json({
       ok: true,
@@ -660,6 +712,9 @@ export function createApiApp(): express.Express {
       pengaturanSekolah: isAdmin
         ? {
             ...incoming.pengaturanSekolah,
+            gas_webapp_url: isAllowedGasUrl(incoming.pengaturanSekolah.gas_webapp_url)
+              ? incoming.pengaturanSekolah.gas_webapp_url.trim()
+              : currentDb.pengaturanSekolah.gas_webapp_url || readDefaultGasUrl(),
             admin_claimed:
               isAdminClaimed(currentDb) || Boolean(incoming.pengaturanSekolah.admin_claimed),
           }
@@ -707,7 +762,7 @@ export function createApiApp(): express.Express {
     }
 
     writeDb(nextDb);
-    void triggerAutoSyncToSheets(nextDb);
+    await triggerAutoSyncToSheets(nextDb);
     res.json({ ok: true, syncStatus });
   });
 
@@ -719,11 +774,19 @@ export function createApiApp(): express.Express {
     }
     const { url, syncKey } = (req.body || {}) as { url?: string; syncKey?: string };
     const db = readDb();
-    const targetUrl = url || db.pengaturanSekolah.gas_webapp_url;
+    const targetUrl =
+      (isAllowedGasUrl(url) ? url!.trim() : '') ||
+      db.pengaturanSekolah.gas_webapp_url ||
+      readDefaultGasUrl();
     const targetKey = syncKey || db.pengaturanSekolah.gas_sync_key || 'WASHLIYAH_SYNC_2026';
 
     const result = await callGasBridge(targetUrl, targetKey, 'ping');
     if (result.ok) {
+      if (targetUrl && db.pengaturanSekolah.gas_webapp_url !== targetUrl) {
+        db.pengaturanSekolah.gas_webapp_url = targetUrl;
+        db.pengaturanSekolah.gas_sync_key = targetKey;
+        writeDb(db);
+      }
       syncStatus = {
         connected: true,
         lastSyncAt: new Date().toISOString(),
@@ -747,21 +810,69 @@ export function createApiApp(): express.Express {
       res.status(403).json({ ok: false, error: 'Hanya Admin yang dapat mengirim data ke Sheet.' });
       return;
     }
-    const { url, syncKey } = (req.body || {}) as { url?: string; syncKey?: string };
-    const db = readDb();
-    const targetUrl = db.pengaturanSekolah.gas_webapp_url || url || '';
-    const targetKey = db.pengaturanSekolah.gas_sync_key || syncKey || 'WASHLIYAH_SYNC_2026';
-    const result = await callGasBridge(targetUrl, targetKey, 'syncFullDb', db);
+    const { url, syncKey, dbSnapshot } = (req.body || {}) as {
+      url?: string;
+      syncKey?: string;
+      dbSnapshot?: SchoolDatabase;
+    };
+    const currentDb = readDb();
+    let effectiveDb = currentDb;
+    if (dbSnapshot && dbSnapshot.pengaturanSekolah && Array.isArray(dbSnapshot.siswa)) {
+      const currentUserMap = new Map(currentDb.users.map((u) => [u.user_id, u]));
+      const mergedUsers = Array.isArray(dbSnapshot.users)
+        ? dbSnapshot.users.map((u) => {
+            const existing = currentUserMap.get(u.user_id);
+            return {
+              ...u,
+              password_hash: existing?.password_hash || u.password_hash || '',
+            };
+          })
+        : currentDb.users;
+      effectiveDb = {
+        ...currentDb,
+        ...dbSnapshot,
+        users: mergedUsers,
+        pengaturanSekolah: {
+          ...currentDb.pengaturanSekolah,
+          ...dbSnapshot.pengaturanSekolah,
+          admin_claimed:
+            isAdminClaimed(currentDb) || Boolean(dbSnapshot.pengaturanSekolah.admin_claimed),
+        },
+      };
+    }
+
+    const targetUrl =
+      (isAllowedGasUrl(url) ? url!.trim() : '') ||
+      effectiveDb.pengaturanSekolah.gas_webapp_url ||
+      readDefaultGasUrl();
+    const targetKey =
+      syncKey || effectiveDb.pengaturanSekolah.gas_sync_key || 'WASHLIYAH_SYNC_2026';
+
+    if (targetUrl) {
+      effectiveDb.pengaturanSekolah = {
+        ...effectiveDb.pengaturanSekolah,
+        gas_webapp_url: targetUrl,
+        gas_sync_key: targetKey,
+      };
+    }
+    writeDb(effectiveDb);
+
+    const result = await callGasBridge(targetUrl, targetKey, 'syncFullDb', effectiveDb);
     if (result.ok) {
       syncStatus = {
         connected: true,
         lastSyncAt: new Date().toISOString(),
         lastError: null,
-        schoolName: db.pengaturanSekolah.nama_sekolah,
+        schoolName: effectiveDb.pengaturanSekolah.nama_sekolah,
       };
       res.json({ ok: true, syncStatus });
     } else {
-      res.status(400).json({ ok: false, error: result.error || 'Gagal mengirim ke Google Sheets.' });
+      syncStatus = {
+        ...syncStatus,
+        connected: false,
+        lastError: result.error || 'Gagal mengirim ke Google Sheets.',
+      };
+      res.status(400).json({ ok: false, error: syncStatus.lastError, syncStatus });
     }
   });
 

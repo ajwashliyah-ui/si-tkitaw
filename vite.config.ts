@@ -25,6 +25,10 @@ export default defineConfig(() => {
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
           }
+          const rootConfigJs = path.resolve(__dirname, 'config.js');
+          if (fs.existsSync(distDir) && fs.existsSync(rootConfigJs)) {
+            fs.copyFileSync(rootConfigJs, path.resolve(distDir, 'config.js'));
+          }
         },
       },
     ],

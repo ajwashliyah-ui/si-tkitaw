@@ -414,9 +414,26 @@ export const AdminSiswaUsersView: React.FC = () => {
             <div className="judul-baris flex-wrap gap-2">
               <div>
                 <h2 className="text-lg text-[#0f4527]">Daftar siswa</h2>
-                <span className="text-xs text-[#55665a]">{db.siswa.length} anak</span>
+                <span className="text-xs text-[#55665a]">
+                  {db.siswa.length} anak
+                  {syncStatus.connected && syncStatus.lastSyncAt
+                    ? ` · Tersinkron ke Google Sheet`
+                    : syncStatus.lastError
+                    ? ` · Gagal sinkron Sheet: ${syncStatus.lastError}`
+                    : ''}
+                </span>
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={pushToSheets}
+                  disabled={db.siswa.length === 0}
+                  className="tbl polos kecil"
+                  title="Kirim seluruh data siswa terbaru langsung ke Google Sheets"
+                >
+                  <UploadCloud className="w-3.5 h-3.5" />
+                  <span>Kirim ke Sheet</span>
+                </button>
                 <button
                   type="button"
                   onClick={() =>

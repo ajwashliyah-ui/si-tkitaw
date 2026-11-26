@@ -91,6 +91,35 @@ async function safeJson<T = any>(res: Response): Promise<T | null> {
   }
 }
 
+export function getClientDefaultGasUrl(): string {
+  if (typeof window === 'undefined') return '';
+  const raw = (window as any)?.APP_CONFIG?.GAS_WEBAPP_URL;
+  if (
+    typeof raw === 'string' &&
+    raw.startsWith('https://script.google.com/macros/s/') &&
+    !raw.includes('GANTI_DENGAN_DEPLOYMENT_ID_ANDA')
+  ) {
+    return raw.trim();
+  }
+  return '';
+}
+
+function withDefaultGasUrl(data: SchoolDatabase): SchoolDatabase {
+  const currentUrl = data.pengaturanSekolah?.gas_webapp_url?.trim();
+  if (currentUrl && !currentUrl.includes('GANTI_DENGAN_DEPLOYMENT_ID_ANDA')) {
+    return data;
+  }
+  const fallback = getClientDefaultGasUrl();
+  if (!fallback) return data;
+  return {
+    ...data,
+    pengaturanSekolah: {
+      ...data.pengaturanSekolah,
+      gas_webapp_url: fallback,
+    },
+  };
+}
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [db, setDb] = useState<SchoolDatabase>(() => createInitialSeedDatabase());
   const dbRef = useRef<SchoolDatabase>(db);
@@ -162,9 +191,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
     const dbJson = await safeJson(dbRes);
     if (dbRes.ok && dbJson?.ok && dbJson.data) {
-      dbRef.current = dbJson.data;
-      setDb(dbJson.data);
-      setSchoolInfo(dbJson.data.pengaturanSekolah);
+      const next = withDefaultGasUrl(dbJson.data);
+      dbRef.current = next;
+      setDb(next);
+      setSchoolInfo(next.pengaturanSekolah);
       if (dbJson.syncStatus) setSyncStatus(dbJson.syncStatus);
     }
   }, []);
@@ -189,9 +219,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           };
         }
         if (data.data) {
-          dbRef.current = data.data;
-          setDb(data.data);
-          setSchoolInfo(data.data.pengaturanSekolah);
+          const next = withDefaultGasUrl(data.data);
+          dbRef.current = next;
+          setDb(next);
+          setSchoolInfo(next.pengaturanSekolah);
           if (data.syncStatus) setSyncStatus(data.syncStatus);
         } else {
           await loadDbWithToken(data.token);
@@ -229,9 +260,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         setAdminClaimed(true);
         if (data.data) {
-          dbRef.current = data.data;
-          setDb(data.data);
-          setSchoolInfo(data.data.pengaturanSekolah);
+          const next = withDefaultGasUrl(data.data);
+          dbRef.current = next;
+          setDb(next);
+          setSchoolInfo(next.pengaturanSekolah);
           if (data.syncStatus) setSyncStatus(data.syncStatus);
         } else {
           await loadDbWithToken(data.token);
@@ -381,7 +413,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       toastText?: string,
       options?: { graduatedSiswaIds?: string[] }
     ) => {
-      const finalDb = updater(dbRef.current);
+      const finalDb = withDefaultGasUrl(updater(dbRef.current));
       dbRef.current = finalDb;
       setDb(finalDb);
       setSchoolInfo(finalDb.pengaturanSekolah);
@@ -401,12 +433,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           },
           body: JSON.stringify(payload),
         });
-        const json = await res.json();
-        if (!res.ok || !json.ok) {
-          addToast(json.error || 'Gagal menyimpan perubahan ke server.', 'error');
+        const json = await safeJson(res);
+        if (!res.ok || !json?.ok) {
+          addToast(json?.error || 'Gagal menyimpan perubahan ke server.', 'error');
         } else {
           if (json.syncStatus) setSyncStatus(json.syncStatus);
           if (toastText) addToast(toastText, 'success');
+          if (
+            finalDb.pengaturanSekolah.gas_webapp_url &&
+            json.syncStatus?.lastError
+          ) {
+            addToast(
+              `Data tersimpan di aplikasi, namun gagal sinkron ke Google Sheets: ${json.syncStatus.lastError}`,
+              'error'
+            );
+          }
         }
       } catch {
         addToast('Koneksi terputus saat menyimpan data.', 'error');
@@ -502,6 +543,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!token) return;
     setSaving(true);
     try {
+      const effectiveUrl =
+        dbRef.current.pengaturanSekolah.gas_webapp_url || getClientDefaultGasUrl();
       const res = await fetch('/api/sheets/push', {
         method: 'POST',
         headers: {
@@ -509,24 +552,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          url: dbRef.current.pengaturanSekolah.gas_webapp_url,
+          url: effectiveUrl,
           syncKey: dbRef.current.pengaturanSekolah.gas_sync_key,
+          dbSnapshot: currentUser?.role === 'Admin' ? dbRef.current : undefined,
         }),
       });
-      const json = await res.json();
-      if (json.syncStatus) setSyncStatus(json.syncStatus);
-      if (res.ok && json.ok) {
+      const json = await safeJson(res);
+      if (json?.syncStatus) setSyncStatus(json.syncStatus);
+      if (res.ok && json?.ok) {
         triggerCelebration('Tersinkron ke Sheet!');
         addToast('Seluruh data berhasil dikirim ke Google Sheets.', 'success');
       } else {
-        addToast(json.error || 'Gagal mengirim ke Google Sheets.', 'error');
+        addToast(json?.error || 'Gagal mengirim ke Google Sheets.', 'error');
       }
     } catch {
       addToast('Koneksi terputus saat sinkronisasi.', 'error');
     } finally {
       setSaving(false);
     }
-  }, [token, addToast, triggerCelebration]);
+  }, [token, currentUser?.role, addToast, triggerCelebration]);
 
   const pullFromSheets = useCallback(async () => {
     if (!token) return;

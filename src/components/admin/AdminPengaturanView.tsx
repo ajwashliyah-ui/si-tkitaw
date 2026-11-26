@@ -13,7 +13,7 @@ import {
   CheckCircle2,
   Sparkles,
 } from 'lucide-react';
-import { useApp } from '../../context/AppContext';
+import { getClientDefaultGasUrl, useApp } from '../../context/AppContext';
 import { PengaturanSekolah, SemesterType } from '../../types';
 import { GoogleSheetsDirectPanel } from './GoogleSheetsDirectPanel';
 
@@ -30,7 +30,10 @@ export const AdminPengaturanView: React.FC = () => {
     triggerCelebration,
   } = useApp();
 
-  const [form, setForm] = useState<PengaturanSekolah>(() => ({ ...db.pengaturanSekolah }));
+  const [form, setForm] = useState<PengaturanSekolah>(() => ({
+    ...db.pengaturanSekolah,
+    gas_webapp_url: db.pengaturanSekolah.gas_webapp_url || getClientDefaultGasUrl(),
+  }));
   const [showSyncKey, setShowSyncKey] = useState(false);
   const [testingConn, setTestingConn] = useState(false);
   const [testResultMsg, setTestResultMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -39,7 +42,10 @@ export const AdminPengaturanView: React.FC = () => {
   const [confirmReset, setConfirmReset] = useState(false);
 
   useEffect(() => {
-    setForm({ ...db.pengaturanSekolah });
+    setForm({
+      ...db.pengaturanSekolah,
+      gas_webapp_url: db.pengaturanSekolah.gas_webapp_url || getClientDefaultGasUrl(),
+    });
   }, [db.pengaturanSekolah]);
 
   const buildCleanedForm = (): PengaturanSekolah => ({

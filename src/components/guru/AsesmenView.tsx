@@ -13,6 +13,7 @@ import {
   MAX_HASIL_KARYA_PER_MONTH,
 } from '../../utils/attendance';
 import { compressImageFile } from '../../utils/imageCompress';
+import { isKelasLanjutan } from '../../utils/kelas';
 import { sanitizeImageUrl } from '../../utils/crypto';
 import { MotionTabBar } from '../common/MotionPrimitives';
 
@@ -66,7 +67,7 @@ export const AsesmenView: React.FC = () => {
       ta_id: taId,
       siswa_id: student.siswa_id,
       nama_anak: student.nama_anak,
-      kelas: student.kelas_aktif === 'Kelas B' ? 'Kelas B' : 'Kelas A',
+      kelas: student.kelas_aktif,
       deskripsi_kejadian: deskripsiKejadian.trim(),
       analisis_nabp: anekdotNabp.trim(),
       analisis_jd: anekdotJd.trim(),
@@ -148,7 +149,7 @@ export const AsesmenView: React.FC = () => {
       ta_id: taId,
       siswa_id: student.siswa_id,
       nama_anak: student.nama_anak,
-      kelas: student.kelas_aktif === 'Kelas B' ? 'Kelas B' : 'Kelas A',
+      kelas: student.kelas_aktif,
       foto_drive_id: '',
       foto_url: finalFotoUrl,
       deskripsi_karya: deskripsiKarya.trim(),
@@ -190,7 +191,8 @@ export const AsesmenView: React.FC = () => {
   const [ceklisKejadian, setCeklisKejadian] = useState('');
   const [ceklisMode, setCeklisMode] = useState<'input' | 'rekap'>('input');
 
-  const studentKelompok = student?.kelas_aktif === 'Kelas B' ? 'Kelompok B' : 'Kelompok A';
+  const studentKelompok =
+    student && isKelasLanjutan(db, student.kelas_aktif) ? 'Kelompok B' : 'Kelompok A';
 
   const matchingAtpList = useMemo(() => {
     const q = atpSearch.trim().toLowerCase();
@@ -223,7 +225,7 @@ export const AsesmenView: React.FC = () => {
       ta_id: taId,
       siswa_id: student.siswa_id,
       nama_anak: student.nama_anak,
-      kelas: student.kelas_aktif === 'Kelas B' ? 'Kelas B' : 'Kelas A',
+      kelas: student.kelas_aktif,
       elemen: ceklisElemen,
       kode_atp: activeAtp.kode_atp,
       tujuan_pembelajaran: activeAtp.tujuan_pembelajaran,

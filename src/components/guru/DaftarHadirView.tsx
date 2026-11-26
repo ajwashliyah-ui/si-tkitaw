@@ -4,6 +4,7 @@ import { useApp } from '../../context/AppContext';
 import { DaftarHadirRecord, KelasType, SemesterType, StatusAbsensi } from '../../types';
 import { computeAttendanceRekap, getSemesterFromMonth } from '../../utils/attendance';
 import { exportAttendanceToExcel } from '../../utils/excelExport';
+import { getMasterKelasList } from '../../utils/kelas';
 import { GuruSpiritBanner } from '../common/StickerCelebration';
 
 const STATUS_OPTIONS: { value: StatusAbsensi; label: string; activeClass: string }[] = [
@@ -16,6 +17,7 @@ const STATUS_OPTIONS: { value: StatusAbsensi; label: string; activeClass: string
 export const DaftarHadirView: React.FC = () => {
   const { db, currentUser, schoolInfo, updateDb, triggerCelebration } = useApp();
 
+  const kelasList = useMemo(() => getMasterKelasList(db), [db]);
   const [subTab, setSubTab] = useState<'input' | 'rekap_bulanan' | 'rekap_semester'>('input');
   const [tanggal, setTanggal] = useState<string>(() => new Date().toISOString().slice(0, 10));
   const [kelasFilter, setKelasFilter] = useState<'Semua Kelas' | KelasType>(() =>
@@ -72,7 +74,7 @@ export const DaftarHadirView: React.FC = () => {
         ta_id: activeTa,
         siswa_id: st.siswa_id,
         nama_anak: st.nama_anak,
-        kelas: st.kelas_aktif === 'Kelas B' ? 'Kelas B' : 'Kelas A',
+        kelas: st.kelas_aktif,
         status: statusMap[st.siswa_id] || 'HADIR',
         diinput_oleh: currentUser?.nama_lengkap || 'Guru',
         updated_at: now,
@@ -187,8 +189,11 @@ export const DaftarHadirView: React.FC = () => {
                 className="isian-kontrol"
               >
                 <option value="Semua Kelas">Semua kelas</option>
-                <option value="Kelas A">Kelas A</option>
-                <option value="Kelas B">Kelas B</option>
+                {kelasList.map((k) => (
+                  <option key={k.kelas_id} value={k.nama_kelas}>
+                    {k.nama_kelas}
+                  </option>
+                ))}
               </select>
             </label>
 
@@ -298,8 +303,11 @@ export const DaftarHadirView: React.FC = () => {
                   className="isian-kontrol"
                 >
                   <option value="Semua Kelas">Semua kelas</option>
-                  <option value="Kelas A">Kelas A</option>
-                  <option value="Kelas B">Kelas B</option>
+                  {kelasList.map((k) => (
+                    <option key={k.kelas_id} value={k.nama_kelas}>
+                      {k.nama_kelas}
+                    </option>
+                  ))}
                 </select>
               </label>
             </div>

@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Eye, EyeOff, UserPlus, GraduationCap, Trash2 } from 'lucide-react';
+import { Eye, EyeOff, UserPlus, GraduationCap, Trash2, AlertTriangle, X, UploadCloud } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import {
   JenisKelamin,
@@ -7,18 +7,32 @@ import {
   Siswa,
   StatusSiswa,
   TrackKelasB,
+  User,
 } from '../../types';
+import { getMasterKelasList, isKelasLanjutan } from '../../utils/kelas';
 
 export const AdminSiswaUsersView: React.FC = () => {
-  const { db, updateDb, createUserByAdmin, addToast } = useApp();
+  const {
+    db,
+    currentUser,
+    updateDb,
+    createUserByAdmin,
+    deleteUserByAdmin,
+    deleteSiswaWithCleanup,
+    syncStatus,
+    pushToSheets,
+    addToast,
+  } = useApp();
   const [subTab, setSubTab] = useState<'siswa' | 'users'>('siswa');
+
+  const kelasList = useMemo(() => getMasterKelasList(db), [db]);
 
   // Form Siswa Baru
   const [nis, setNis] = useState('');
   const [namaAnak, setNamaAnak] = useState('');
   const [jk, setJk] = useState<JenisKelamin>('L');
   const [tglLahir, setTglLahir] = useState('2021-05-10');
-  const [kelasAktif, setKelasAktif] = useState<KelasType>('Kelas A');
+  const [kelasAktif, setKelasAktif] = useState<KelasType>(() => kelasList[0]?.nama_kelas || 'Kelas A');
   const [ortuUserId, setOrtuUserId] = useState('');
   const [trackB, setTrackB] = useState<TrackKelasB>('TRACK_1');
 
@@ -31,6 +45,10 @@ export const AdminSiswaUsersView: React.FC = () => {
   const [noHp, setNoHp] = useState('');
   const [kelasAmpu, setKelasAmpu] = useState<KelasType | ''>('');
   const [creatingUser, setCreatingUser] = useState(false);
+
+  const [confirmDeleteSiswa, setConfirmDeleteSiswa] = useState<Siswa | null>(null);
+  const [confirmDeleteUser, setConfirmDeleteUser] = useState<User | null>(null);
+  const [deletingAction, setDeletingAction] = useState(false);
 
   const parentUsers = useMemo(() => db.users.filter((u) => u.role === 'OrangTua'), [db.users]);
 
@@ -97,6 +115,24 @@ export const AdminSiswaUsersView: React.FC = () => {
     );
   };
 
+  const handleUpdateSiswaKelas = async (siswaId: string, nextKelas: string) => {
+    await updateDb(
+      (prev) => ({
+        ...prev,
+        siswa: prev.siswa.map((s) =>
+          s.siswa_id === siswaId
+            ? {
+                ...s,
+                kelas_aktif: nextKelas,
+                status_siswa: nextKelas === 'Lulus' ? 'Lulus' : 'Aktif',
+              }
+            : s
+        ),
+      }),
+      `Kelas siswa diubah ke ${nextKelas}.`
+    );
+  };
+
   const handleUpdateSiswaStatus = async (siswaId: string, status: StatusSiswa) => {
     await updateDb(
       (prev) => ({
@@ -136,7 +172,7 @@ export const AdminSiswaUsersView: React.FC = () => {
       nama_lengkap: namaLengkap.trim(),
       role,
       no_hp: noHp.trim(),
-      kelas_ampu: role === 'Guru' ? kelasAmpu || 'Kelas A' : undefined,
+      kelas_ampu: role === 'Guru' ? kelasAmpu || kelasList[0]?.nama_kelas || 'Kelas A' : undefined,
     });
     setCreatingUser(false);
     if (res.ok) {
@@ -159,14 +195,22 @@ export const AdminSiswaUsersView: React.FC = () => {
     );
   };
 
-  const handleDeleteSiswa = async (siswaId: string) => {
-    await updateDb(
-      (prev) => ({
-        ...prev,
-        siswa: prev.siswa.filter((s) => s.siswa_id !== siswaId),
-      }),
-      'Data siswa dihapus.'
-    );
+  const handleConfirmDeleteSiswa = async () => {
+    if (!confirmDeleteSiswa) return;
+    setDeletingAction(true);
+    await deleteSiswaWithCleanup(confirmDeleteSiswa.siswa_id);
+    setDeletingAction(false);
+    setConfirmDeleteSiswa(null);
+  };
+
+  const handleConfirmDeleteUser = async () => {
+    if (!confirmDeleteUser) return;
+    setDeletingAction(true);
+    const res = await deleteUserByAdmin(confirmDeleteUser.user_id);
+    setDeletingAction(false);
+    if (res.ok) {
+      setConfirmDeleteUser(null);
+    }
   };
 
   return (
@@ -175,29 +219,46 @@ export const AdminSiswaUsersView: React.FC = () => {
         <div>
           <h1 className="text-2xl sm:text-3xl text-[#0f4527]">Data siswa & akun</h1>
           <p className="text-sm text-[#55665a] mt-1">
-            Kelola data anak dan hubungkan satu akun orang tua ke satu atau lebih anak.
+            Kelola data anak, hapus akun atau murid secara aman, dan hubungkan akun orang tua.
           </p>
         </div>
 
-        <div className="tab-bar" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={subTab === 'siswa'}
-            onClick={() => setSubTab('siswa')}
-            className={`tab-btn ${subTab === 'siswa' ? 'aktif' : ''}`}
-          >
-            Data siswa ({db.siswa.length})
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={subTab === 'users'}
-            onClick={() => setSubTab('users')}
-            className={`tab-btn ${subTab === 'users' ? 'aktif' : ''}`}
-          >
-            Akun pengguna ({db.users.length})
-          </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {Boolean(db.pengaturanSekolah.gas_webapp_url) && (
+            <button
+              type="button"
+              onClick={pushToSheets}
+              className="tbl polos kecil"
+              title={
+                syncStatus.connected
+                  ? 'Perubahan otomatis tersinkron ke Google Sheets. Klik untuk kirim ulang manual.'
+                  : 'Kirim data terbaru ke Google Sheets'
+              }
+            >
+              <UploadCloud className="w-3.5 h-3.5" />
+              <span>{syncStatus.connected ? 'Sinkron ke Sheet' : 'Kirim ke Sheet'}</span>
+            </button>
+          )}
+          <div className="tab-bar" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={subTab === 'siswa'}
+              onClick={() => setSubTab('siswa')}
+              className={`tab-btn ${subTab === 'siswa' ? 'aktif' : ''}`}
+            >
+              Data siswa ({db.siswa.length})
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={subTab === 'users'}
+              onClick={() => setSubTab('users')}
+              className={`tab-btn ${subTab === 'users' ? 'aktif' : ''}`}
+            >
+              Akun pengguna ({db.users.length})
+            </button>
+          </div>
         </div>
       </div>
 
@@ -278,11 +339,14 @@ export const AdminSiswaUsersView: React.FC = () => {
                 <select
                   id="s-kelas"
                   value={kelasAktif}
-                  onChange={(e) => setKelasAktif(e.target.value as KelasType)}
+                  onChange={(e) => setKelasAktif(e.target.value)}
                   className="isian-kontrol min-h-[40px] text-xs"
                 >
-                  <option value="Kelas A">Kelas A</option>
-                  <option value="Kelas B">Kelas B</option>
+                  {kelasList.map((k) => (
+                    <option key={k.kelas_id} value={k.nama_kelas}>
+                      {k.nama_kelas}
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -306,10 +370,10 @@ export const AdminSiswaUsersView: React.FC = () => {
               </select>
             </div>
 
-            {kelasAktif === 'Kelas B' && (
+            {isKelasLanjutan(db, kelasAktif) && (
               <div>
                 <label htmlFor="s-track" className="block text-xs font-bold text-[#55665a] mb-1">
-                  Track awal Kelas B
+                  Track awal ({kelasAktif})
                 </label>
                 <select
                   id="s-track"
@@ -361,7 +425,27 @@ export const AdminSiswaUsersView: React.FC = () => {
                             NIS {s.nis} · {s.jenis_kelamin} · {s.tanggal_lahir}
                           </p>
                         </td>
-                        <td className="font-semibold whitespace-nowrap">{s.kelas_aktif}</td>
+                        <td className="font-semibold whitespace-nowrap">
+                          {s.kelas_aktif === 'Lulus' ? (
+                            <span className="text-xs font-bold text-[#0f4527]">Lulus (SD)</span>
+                          ) : (
+                            <select
+                              aria-label={`Kelas ${s.nama_anak}`}
+                              value={s.kelas_aktif}
+                              onChange={(e) => handleUpdateSiswaKelas(s.siswa_id, e.target.value)}
+                              className="isian-kontrol min-h-[36px] py-1 text-xs w-auto max-w-[160px]"
+                            >
+                              {!kelasList.some((k) => k.nama_kelas === s.kelas_aktif) && (
+                                <option value={s.kelas_aktif}>{s.kelas_aktif}</option>
+                              )}
+                              {kelasList.map((k) => (
+                                <option key={k.kelas_id} value={k.nama_kelas}>
+                                  {k.nama_kelas}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </td>
                         <td>
                           <select
                             aria-label={`Akun orang tua untuk ${s.nama_anak}`}
@@ -394,9 +478,10 @@ export const AdminSiswaUsersView: React.FC = () => {
                         <td className="text-right">
                           <button
                             type="button"
-                            onClick={() => handleDeleteSiswa(s.siswa_id)}
-                            aria-label={`Hapus ${s.nama_anak}`}
+                            onClick={() => setConfirmDeleteSiswa(s)}
+                            aria-label={`Hapus murid ${s.nama_anak}`}
                             className="p-2 rounded-lg text-[#55665a] hover:text-[#a33a25] hover:bg-[#f8dcd6]/60 cursor-pointer"
+                            title={`Hapus murid ${s.nama_anak}`}
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
@@ -519,12 +604,15 @@ export const AdminSiswaUsersView: React.FC = () => {
                   </label>
                   <select
                     id="u-kelas"
-                    value={kelasAmpu || 'Kelas A'}
-                    onChange={(e) => setKelasAmpu(e.target.value as KelasType)}
+                    value={kelasAmpu || kelasList[0]?.nama_kelas || 'Kelas A'}
+                    onChange={(e) => setKelasAmpu(e.target.value)}
                     className="isian-kontrol min-h-[40px] text-xs"
                   >
-                    <option value="Kelas A">Kelas A</option>
-                    <option value="Kelas B">Kelas B</option>
+                    {kelasList.map((k) => (
+                      <option key={k.kelas_id} value={k.nama_kelas}>
+                        {k.nama_kelas}
+                      </option>
+                    ))}
                   </select>
                 </div>
               )}
@@ -576,13 +664,34 @@ export const AdminSiswaUsersView: React.FC = () => {
                             : 'Seluruh sekolah'}
                         </td>
                         <td className="text-right">
-                          <button
-                            type="button"
-                            onClick={() => handleToggleUserActive(u.user_id)}
-                            className={`tbl polos kecil ${u.status_aktif ? '' : 'opacity-60'}`}
-                          >
-                            {u.status_aktif ? 'Aktif' : 'Nonaktif'}
-                          </button>
+                          <div className="inline-flex items-center justify-end gap-1.5">
+                            {u.role === 'Admin' ? (
+                              <span className="text-xs font-extrabold text-[#0f4527] px-2 py-1 rounded-lg bg-[#dcebd2]/70">
+                                Admin Utama
+                              </span>
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleUserActive(u.user_id)}
+                                  className={`tbl polos kecil ${u.status_aktif ? '' : 'opacity-60'}`}
+                                >
+                                  {u.status_aktif ? 'Aktif' : 'Nonaktif'}
+                                </button>
+                                {u.user_id !== currentUser?.user_id && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmDeleteUser(u)}
+                                    aria-label={`Hapus akun ${u.nama_lengkap}`}
+                                    title={`Hapus akun ${u.nama_lengkap}`}
+                                    className="p-2 rounded-lg text-[#55665a] hover:text-[#a33a25] hover:bg-[#f8dcd6]/60 cursor-pointer"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );
@@ -591,6 +700,143 @@ export const AdminSiswaUsersView: React.FC = () => {
               </table>
             </div>
           </section>
+        </div>
+      )}
+
+      {/* Modal Konfirmasi Hapus Murid */}
+      {confirmDeleteSiswa && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0b1f14]/55 backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="judul-hapus-murid"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !deletingAction) setConfirmDeleteSiswa(null);
+          }}
+        >
+          <div className="w-full max-w-md bg-[#fffdf7] rounded-[26px] border border-[#d9d5c0] p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <h2 id="judul-hapus-murid" className="text-xl text-[#a33a25] inline-flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5" />
+                <span>Hapus data murid?</span>
+              </h2>
+              <button
+                type="button"
+                disabled={deletingAction}
+                onClick={() => setConfirmDeleteSiswa(null)}
+                aria-label="Tutup dialog"
+                className="w-9 h-9 rounded-full flex items-center justify-center text-[#55665a] hover:bg-[#dcebd2] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-[#f8dcd6]/55 border border-[#a33a25]/30 text-sm text-[#1d2b21] space-y-1">
+              <p className="font-bold text-[#a33a25]">
+                {confirmDeleteSiswa.nama_anak} ({confirmDeleteSiswa.kelas_aktif})
+              </p>
+              <p className="text-xs text-[#55665a] font-mono-tabular">
+                NIS {confirmDeleteSiswa.nis} · Status: {confirmDeleteSiswa.status_siswa}
+              </p>
+            </div>
+
+            <p className="text-xs text-[#55665a] leading-relaxed">
+              Seluruh catatan murid ini (riwayat kelas, daftar hadir, antropometri, literasi, keagamaan, asesmen, dan 7 KAIH) ikut dibersihkan dari sistem dan Google Sheets agar data tetap rapi.
+            </p>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                disabled={deletingAction}
+                onClick={() => setConfirmDeleteSiswa(null)}
+                className="tbl polos"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={deletingAction}
+                onClick={handleConfirmDeleteSiswa}
+                className="tbl merah"
+              >
+                {deletingAction ? 'Menghapus...' : 'Ya, hapus murid'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Konfirmasi Hapus Akun */}
+      {confirmDeleteUser && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0b1f14]/55 backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="judul-hapus-akun"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !deletingAction) setConfirmDeleteUser(null);
+          }}
+        >
+          <div className="w-full max-w-md bg-[#fffdf7] rounded-[26px] border border-[#d9d5c0] p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <h2 id="judul-hapus-akun" className="text-xl text-[#a33a25] inline-flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5" />
+                <span>Hapus akun pengguna?</span>
+              </h2>
+              <button
+                type="button"
+                disabled={deletingAction}
+                onClick={() => setConfirmDeleteUser(null)}
+                aria-label="Tutup dialog"
+                className="w-9 h-9 rounded-full flex items-center justify-center text-[#55665a] hover:bg-[#dcebd2] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-[#f8dcd6]/55 border border-[#a33a25]/30 text-sm text-[#1d2b21] space-y-1">
+              <p className="font-bold text-[#a33a25]">{confirmDeleteUser.nama_lengkap}</p>
+              <p className="text-xs text-[#55665a] font-mono-tabular">
+                @{confirmDeleteUser.username} · Peran: {confirmDeleteUser.role}
+              </p>
+            </div>
+
+            {confirmDeleteUser.role === 'OrangTua' && (
+              <p className="text-xs text-[#55665a] leading-relaxed">
+                {(() => {
+                  const linked = db.siswa.filter((s) => s.ortu_user_id === confirmDeleteUser.user_id);
+                  if (linked.length === 0) {
+                    return 'Akun ini belum terhubung ke murid mana pun. Data murid aman.';
+                  }
+                  return `${linked.length} anak terhubung (${linked.map((s) => s.nama_anak).join(', ')}) akan dilepas tautannya menjadi "Belum dihubungkan", data anak tetap aman.`;
+                })()}
+              </p>
+            )}
+            {confirmDeleteUser.role === 'Guru' && (
+              <p className="text-xs text-[#55665a] leading-relaxed">
+                Akun guru ini tidak akan bisa login lagi. Catatan perkembangan murid dan rapor yang sudah dibuat tetap tersimpan.
+              </p>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                disabled={deletingAction}
+                onClick={() => setConfirmDeleteUser(null)}
+                className="tbl polos"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={deletingAction}
+                onClick={handleConfirmDeleteUser}
+                className="tbl merah"
+              >
+                {deletingAction ? 'Menghapus...' : 'Ya, hapus akun'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

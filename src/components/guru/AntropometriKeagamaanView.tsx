@@ -10,6 +10,7 @@ import {
   UlasanOrtu,
 } from '../../types';
 import { calculateAgeInMonths, evaluateAnthropometry } from '../../utils/anthropometry';
+import { isKelasLanjutan } from '../../utils/kelas';
 import { AnthropometryChart } from '../common/AnthropometryChart';
 
 const SKALA_LITERASI_OPTS: SkalaLiterasi[] = [
@@ -57,6 +58,7 @@ export const AntropometriKeagamaanView: React.FC = () => {
     () => availableStudents.find((s) => s.siswa_id === selectedSiswaId) || availableStudents[0],
     [availableStudents, selectedSiswaId]
   );
+  const isStudentLanjutan = student ? isKelasLanjutan(db, student.kelas_aktif) : false;
 
   // Antropometri form state
   const [bbKg, setBbKg] = useState<string>('16.8');
@@ -141,14 +143,14 @@ export const AntropometriKeagamaanView: React.FC = () => {
     e.preventDefault();
     if (!student) return;
     const taId = db.tahunAjaran.find((t) => t.status_aktif)?.ta_id || 'TA-2026-2027';
-    const isKelasB = student.kelas_aktif === 'Kelas B';
+    const isKelasB = isKelasLanjutan(db, student.kelas_aktif);
 
     const litRecord: LiterasiRecord = {
       lit_id: `LIT-${periodeBulan}-${student.siswa_id}`,
       siswa_id: student.siswa_id,
       ta_id: taId,
       periode_bulan: periodeBulan,
-      kelas: isKelasB ? 'Kelas B' : 'Kelas A',
+      kelas: student.kelas_aktif,
       track_level_dipilih: isKelasB ? trackB : 'STANDAR_A',
       target_kustom: isKelasB && trackB === 'KUSTOM' ? targetKustom.trim() : '',
       nilai_huruf_atau_dasar: nilaiDasar,
@@ -442,13 +444,13 @@ export const AntropometriKeagamaanView: React.FC = () => {
           <div>
             <h2 className="text-xl text-[#0f4527]">Penilaian literasi ({student?.kelas_aktif})</h2>
             <p className="text-xs text-[#55665a]">
-              {student?.kelas_aktif === 'Kelas B'
+              {isStudentLanjutan
                 ? 'Pilih atau sesuaikan target belajar pribadi anak.'
                 : 'Pengenalan huruf A–Z dan suku kata mudah (KV).'}
             </p>
           </div>
 
-          {student?.kelas_aktif === 'Kelas B' && (
+          {isStudentLanjutan && (
             <div className="space-y-3 rounded-[14px] border border-[#c2d7b4] bg-[#dcebd2]/45 p-4">
               <label className="block">
                 <span className="block font-extrabold text-xs text-[#0f4527] mb-1">
@@ -487,7 +489,7 @@ export const AntropometriKeagamaanView: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <label className="block">
               <span className="block font-extrabold text-xs mb-1">
-                {student?.kelas_aktif === 'Kelas B' ? 'Kemampuan dasar' : 'Pengenalan huruf A-Z'}
+                {isStudentLanjutan ? 'Kemampuan dasar' : 'Pengenalan huruf A-Z'}
               </span>
               <select
                 value={nilaiDasar}
@@ -502,7 +504,7 @@ export const AntropometriKeagamaanView: React.FC = () => {
 
             <label className="block">
               <span className="block font-extrabold text-xs mb-1">
-                {student?.kelas_aktif === 'Kelas B' ? 'Kemampuan lanjutan' : 'Suku kata mudah (KV)'}
+                {isStudentLanjutan ? 'Kemampuan lanjutan' : 'Suku kata mudah (KV)'}
               </span>
               <select
                 value={nilaiLanjutan}
@@ -515,7 +517,7 @@ export const AntropometriKeagamaanView: React.FC = () => {
               </select>
             </label>
 
-            {student?.kelas_aktif === 'Kelas B' && (
+            {isStudentLanjutan && (
               <label className="block">
                 <span className="block font-extrabold text-xs mb-1">Kalimat (opsional)</span>
                 <select

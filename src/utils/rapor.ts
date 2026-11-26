@@ -10,6 +10,7 @@ import {
 } from '../types';
 import { getMonthlyKaihSummary } from './kaih';
 import { AttendanceRekapRow } from './attendance';
+import { inferJenjangFromName } from './kelas';
 
 export function statusToStars(status: StatusPenguasaanHarian): 1 | 2 | 3 | 4 {
   switch (status) {
@@ -285,8 +286,9 @@ export function selectAdaptiveParentTips(params: {
   literasi: LiterasiRecord[];
   kaihHarian: KaihHarianRecord[];
   keagamaan: KeagamaanRecord[];
+  isLanjutan?: boolean;
 }): MasterTips[] {
-  const { siswa, periodeBulan, masterTips, antropometri, literasi, kaihHarian, keagamaan } = params;
+  const { siswa, periodeBulan, masterTips, antropometri, literasi, kaihHarian, keagamaan, isLanjutan } = params;
   const activeTips = masterTips.filter((t) => t.aktif);
   const findTip = (code: string) => activeTips.find((t) => t.kondisi_pemicu === code);
 
@@ -309,7 +311,11 @@ export function selectAdaptiveParentTips(params: {
     val === 'Belum Berkembang (BB)' || val === 'Mulai Berkembang (MB)';
 
   let litCode = 'LIT_A_HIGH';
-  if (siswa.kelas_aktif === 'Kelas A') {
+  const isKelasA =
+    typeof isLanjutan === 'boolean'
+      ? !isLanjutan
+      : inferJenjangFromName(siswa.kelas_aktif) === 'A';
+  if (isKelasA) {
     if (latestLit && isLow(latestLit.nilai_huruf_atau_dasar)) litCode = 'LIT_A_HURUF_LOW';
     else if (latestLit && isLow(latestLit.nilai_sukukata_atau_lanjutan))
       litCode = 'LIT_A_SUKUKATA_LOW';

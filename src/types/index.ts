@@ -1,6 +1,7 @@
 export type UserRole = 'Admin' | 'Guru' | 'OrangTua';
 
-export type KelasType = 'Kelas A' | 'Kelas B';
+export type KelasType = string;
+export type JenjangKurikulum = 'A' | 'B';
 export type StatusSiswa = 'Aktif' | 'Lulus' | 'Pindah';
 export type JenisKelamin = 'L' | 'P';
 
@@ -57,6 +58,21 @@ export interface TahunAjaran {
   status_aktif: boolean;
 }
 
+export interface MasterKelas {
+  kelas_id: string;
+  nama_kelas: string;
+  jenjang: JenjangKurikulum;
+  urutan: number;
+  aktif: boolean;
+}
+
+export type KeputusanKenaikan =
+  | 'BELUM_DITENTUKAN'
+  | 'NAIK_KELAS_NEXT'
+  | 'NAIK_KELAS_B'
+  | 'LULUS_KE_SD'
+  | 'TINGGAL_KELAS';
+
 export interface Siswa {
   siswa_id: string;
   nis: string;
@@ -68,6 +84,9 @@ export interface Siswa {
   status_siswa: StatusSiswa;
   target_literasi_kelas_b: TrackKelasB;
   target_kustom_kelas_b?: string;
+  keputusan_kenaikan?: KeputusanKenaikan;
+  catatan_kenaikan?: string;
+  keputusan_diatur_oleh?: string;
 }
 
 export interface RiwayatKelas {
@@ -77,7 +96,8 @@ export interface RiwayatKelas {
   nama_ta: string;
   kelas: KelasType | 'Lulus';
   wali_kelas_id: string;
-  status_akhir: 'Berjalan' | 'Naik Kelas' | 'Lulus';
+  status_akhir: 'Berjalan' | 'Naik Kelas' | 'Tinggal Kelas' | 'Lulus';
+  catatan?: string;
 }
 
 export interface AntropometriRecord {
@@ -311,4 +331,5 @@ export interface SchoolDatabase {
   asesmenHasilKarya: AsesmenHasilKarya[];
   asesmenCeklis: AsesmenCeklis[];
   masterAtp: MasterAtp[];
+  masterKelas?: MasterKelas[];
 }

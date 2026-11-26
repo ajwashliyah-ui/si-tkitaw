@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { selectAdaptiveParentTips } from '../../utils/rapor';
+import { isKelasLanjutan } from '../../utils/kelas';
 import { MotionCard, MotionTabBar, MotionTabPanel } from '../common/MotionPrimitives';
 import { StorySceneGrowth } from './StorySceneGrowth';
 
@@ -120,6 +121,7 @@ export const OrtuBerandaView: React.FC<OrtuBerandaViewProps> = ({
       literasi: db.literasi.filter((l) => l.ta_id === effectiveTaId),
       kaihHarian: db.kaihHarian.filter((k) => k.ta_id === effectiveTaId),
       keagamaan: db.keagamaan.filter((k) => k.ta_id === effectiveTaId),
+      isLanjutan: isKelasLanjutan(db, student.kelas_aktif),
     });
   }, [student, db, effectiveTaId]);
 
@@ -202,7 +204,7 @@ export const OrtuBerandaView: React.FC<OrtuBerandaViewProps> = ({
             <h1 className="text-2xl text-[#0f4527]">{student.nama_anak}</h1>
             <p className="text-sm text-[#1d2b21]">
               NIS {student.nis}, {student.kelas_aktif}
-              {student.kelas_aktif === 'Kelas B' ? ` · ${student.target_literasi_kelas_b}` : ''}
+              {isKelasLanjutan(db, student.kelas_aktif) ? ` · ${student.target_literasi_kelas_b}` : ''}
               {isArchive ? '. Arsip, hanya bisa dibaca.' : ''}
             </p>
           </div>

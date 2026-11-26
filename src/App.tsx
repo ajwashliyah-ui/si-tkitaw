@@ -25,6 +25,7 @@ import { DaftarHadirView } from './components/guru/DaftarHadirView';
 import { AsesmenView } from './components/guru/AsesmenView';
 import { AntropometriKeagamaanView } from './components/guru/AntropometriKeagamaanView';
 import { CetakRaporView } from './components/guru/CetakRaporView';
+import { GuruKenaikanKelasView } from './components/guru/GuruKenaikanKelasView';
 
 import { OrtuBerandaView } from './components/ortu/OrtuBerandaView';
 import { KaihKalenderView } from './components/ortu/KaihKalenderView';
@@ -40,6 +41,7 @@ const GURU_NAV: NavItem[] = [
   { id: 'hadir', label: 'Daftar hadir', shortLabel: 'Hadir', icon: ClipboardCheck },
   { id: 'asesmen', label: 'Asesmen', shortLabel: 'Asesmen', icon: FileCheck2 },
   { id: 'fisik_agama', label: 'Tumbuh & agama', shortLabel: 'Tumbuh', icon: Activity },
+  { id: 'kenaikan', label: 'Kenaikan kelas', shortLabel: 'Kenaikan', icon: ArrowUpRight },
   { id: 'rapor', label: 'Cetak rapor', shortLabel: 'Rapor', icon: Printer },
 ];
 
@@ -120,6 +122,7 @@ const PortalRouter: React.FC = () => {
         {tab === 'hadir' && <DaftarHadirView />}
         {tab === 'asesmen' && <AsesmenView />}
         {tab === 'fisik_agama' && <AntropometriKeagamaanView />}
+        {tab === 'kenaikan' && <GuruKenaikanKelasView />}
         {tab === 'rapor' && <CetakRaporView />}
       </AppShell>
     );

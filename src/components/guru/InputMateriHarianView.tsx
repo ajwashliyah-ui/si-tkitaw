@@ -3,6 +3,7 @@ import { Plus, Check, Trash2, X } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { BankMateriHarian, LogMateriHarian, StatusPenguasaanHarian } from '../../types';
 import { isWeekdaySeninJumat } from '../../utils/kaih';
+import { isKelasLanjutan } from '../../utils/kelas';
 import { GuruSpiritBanner } from '../common/StickerCelebration';
 
 const STATUS_PENGUASAAN_OPTIONS: StatusPenguasaanHarian[] = [
@@ -99,7 +100,7 @@ export const InputMateriHarianView: React.FC = () => {
     if (showAllLevels || !selectedStudent || bidang === 'Hijaiyah_Iqra') {
       return base;
     }
-    if (selectedStudent.kelas_aktif === 'Kelas A') {
+    if (!isKelasLanjutan(db, selectedStudent.kelas_aktif)) {
       const matched = base.filter((b) => b.level_track.includes('Kelas A'));
       return matched.length > 0 ? matched : base;
     }
@@ -113,7 +114,7 @@ export const InputMateriHarianView: React.FC = () => {
     if (!needle) return base;
     const matched = base.filter((b) => b.level_track.includes(needle));
     return matched.length > 0 ? matched : base;
-  }, [db.bankMateriHarian, bidang, kategori, showAllLevels, selectedStudent]);
+  }, [db, bidang, kategori, showAllLevels, selectedStudent]);
 
   const activeGroup = useMemo(() => {
     return (
@@ -158,7 +159,7 @@ export const InputMateriHarianView: React.FC = () => {
       tanggal,
       id_siswa: selectedStudent.siswa_id,
       nama_siswa: selectedStudent.nama_anak,
-      kelas: selectedStudent.kelas_aktif === 'Kelas B' ? 'Kelas B' : 'Kelas A',
+      kelas: selectedStudent.kelas_aktif,
       ta_id: activeTa,
       bidang,
       kategori,
@@ -291,7 +292,7 @@ export const InputMateriHarianView: React.FC = () => {
               {availableStudents.map((s) => (
                 <option key={s.siswa_id} value={s.siswa_id}>
                   {s.nama_anak} ({s.kelas_aktif}
-                  {s.kelas_aktif === 'Kelas B' ? ` · ${s.target_literasi_kelas_b}` : ''})
+                  {isKelasLanjutan(db, s.kelas_aktif) ? ` · ${s.target_literasi_kelas_b}` : ''})
                 </option>
               ))}
             </select>

@@ -74,6 +74,9 @@ function buildSchoolSheetTables(db: SchoolDatabase): SheetTablePayload[] {
         'status_siswa',
         'target_literasi_kelas_b',
         'target_kustom_kelas_b',
+        'keputusan_kenaikan',
+        'catatan_kenaikan',
+        'keputusan_diatur_oleh',
       ],
       rows: db.siswa.map((s) => [
         s.siswa_id,
@@ -86,11 +89,14 @@ function buildSchoolSheetTables(db: SchoolDatabase): SheetTablePayload[] {
         s.status_siswa,
         s.target_literasi_kelas_b,
         s.target_kustom_kelas_b || '',
+        s.keputusan_kenaikan || 'BELUM_DITENTUKAN',
+        s.catatan_kenaikan || '',
+        s.keputusan_diatur_oleh || '',
       ]),
     },
     {
       title: 'RiwayatKelas',
-      headers: ['riwayat_id', 'siswa_id', 'ta_id', 'nama_ta', 'kelas', 'wali_kelas_id', 'status_akhir'],
+      headers: ['riwayat_id', 'siswa_id', 'ta_id', 'nama_ta', 'kelas', 'wali_kelas_id', 'status_akhir', 'catatan'],
       rows: db.riwayatKelas.map((r) => [
         r.riwayat_id,
         r.siswa_id,
@@ -99,6 +105,7 @@ function buildSchoolSheetTables(db: SchoolDatabase): SheetTablePayload[] {
         r.kelas,
         r.wali_kelas_id || '',
         r.status_akhir,
+        r.catatan || '',
       ]),
     },
     {
@@ -379,6 +386,17 @@ function buildSchoolSheetTables(db: SchoolDatabase): SheetTablePayload[] {
         u.pengirim_nama,
         u.isi_pesan,
         u.created_at,
+      ]),
+    },
+    {
+      title: 'Master_Kelas',
+      headers: ['kelas_id', 'nama_kelas', 'jenjang', 'urutan', 'aktif'],
+      rows: (db.masterKelas || []).map((k) => [
+        k.kelas_id,
+        k.nama_kelas,
+        k.jenjang,
+        k.urutan,
+        Boolean(k.aktif),
       ]),
     },
   ];

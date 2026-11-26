@@ -15,6 +15,14 @@ export function generateSetupGs(db: SchoolDatabase): string {
   const masterTipsJson = JSON.stringify(db.masterTips);
   const bankMateriJson = JSON.stringify(db.bankMateriHarian);
   const masterAtpJson = JSON.stringify(db.masterAtp);
+  const masterKelasJson = JSON.stringify(
+    db.masterKelas && db.masterKelas.length > 0
+      ? db.masterKelas
+      : [
+          { kelas_id: 'KLS-A', nama_kelas: 'Kelas A', jenjang: 'A', urutan: 1, aktif: true },
+          { kelas_id: 'KLS-B', nama_kelas: 'Kelas B', jenjang: 'B', urutan: 2, aktif: true },
+        ]
+  );
   const usersJson = JSON.stringify(db.users);
   const taJson = JSON.stringify(db.tahunAjaran);
   const siswaJson = JSON.stringify(db.siswa);
@@ -87,18 +95,18 @@ function setupDatabase() {
     if (taData.length) sTA.sheet.getRange(2, 1, taData.length, 5).setValues(taData);
   }
 
-  var sSiswa = ensureSheetWithHeaders_(ss, 'Siswa', ['siswa_id', 'nis', 'nama_anak', 'jenis_kelamin', 'tanggal_lahir', 'ortu_user_id', 'kelas_aktif', 'status_siswa', 'target_literasi_kelas_b', 'target_kustom_kelas_b']);
+  var sSiswa = ensureSheetWithHeaders_(ss, 'Siswa', ['siswa_id', 'nis', 'nama_anak', 'jenis_kelamin', 'tanggal_lahir', 'ortu_user_id', 'kelas_aktif', 'status_siswa', 'target_literasi_kelas_b', 'target_kustom_kelas_b', 'keputusan_kenaikan', 'catatan_kenaikan', 'keputusan_diatur_oleh']);
   if (sSiswa.isNew) {
     var siswaData = ${siswaJson}.map(function(s) {
-      return [s.siswa_id, s.nis, s.nama_anak, s.jenis_kelamin, s.tanggal_lahir, s.ortu_user_id, s.kelas_aktif, s.status_siswa, s.target_literasi_kelas_b, s.target_kustom_kelas_b || ''];
+      return [s.siswa_id, s.nis, s.nama_anak, s.jenis_kelamin, s.tanggal_lahir, s.ortu_user_id, s.kelas_aktif, s.status_siswa, s.target_literasi_kelas_b, s.target_kustom_kelas_b || '', s.keputusan_kenaikan || 'BELUM_DITENTUKAN', s.catatan_kenaikan || '', s.keputusan_diatur_oleh || ''];
     });
-    if (siswaData.length) sSiswa.sheet.getRange(2, 1, siswaData.length, 10).setValues(siswaData);
+    if (siswaData.length) sSiswa.sheet.getRange(2, 1, siswaData.length, 13).setValues(siswaData);
   }
 
-  var sRiwayat = ensureSheetWithHeaders_(ss, 'RiwayatKelas', ['riwayat_id', 'siswa_id', 'ta_id', 'nama_ta', 'kelas', 'wali_kelas_id', 'status_akhir']);
+  var sRiwayat = ensureSheetWithHeaders_(ss, 'RiwayatKelas', ['riwayat_id', 'siswa_id', 'ta_id', 'nama_ta', 'kelas', 'wali_kelas_id', 'status_akhir', 'catatan']);
   if (sRiwayat.isNew) {
-    var rwyData = ${riwayatJson}.map(function(r) { return [r.riwayat_id, r.siswa_id, r.ta_id, r.nama_ta || '', r.kelas, r.wali_kelas_id, r.status_akhir]; });
-    if (rwyData.length) sRiwayat.sheet.getRange(2, 1, rwyData.length, 7).setValues(rwyData);
+    var rwyData = ${riwayatJson}.map(function(r) { return [r.riwayat_id, r.siswa_id, r.ta_id, r.nama_ta || '', r.kelas, r.wali_kelas_id, r.status_akhir, r.catatan || '']; });
+    if (rwyData.length) sRiwayat.sheet.getRange(2, 1, rwyData.length, 8).setValues(rwyData);
   }
 
   ensureSheetWithHeaders_(ss, 'Antropometri', ['log_id', 'siswa_id', 'ta_id', 'periode_bulan', 'usia_bulan', 'bb_kg', 'tb_cm', 'lk_cm', 'lila_cm', 'status_gizi_otomatis', 'kode_pemicu_tips', 'catatan_guru', 'updated_at']);
@@ -136,6 +144,12 @@ function setupDatabase() {
   if (sAtp.isNew) {
     var aRows = ${masterAtpJson}.map(function(a) { return [a.atp_uid, a.kelompok, a.semester_target, a.elemen, a.kode_atp, a.tujuan_pembelajaran, a.aktif]; });
     if (aRows.length) sAtp.sheet.getRange(2, 1, aRows.length, 7).setValues(aRows);
+  }
+
+  var sKelas = ensureSheetWithHeaders_(ss, 'Master_Kelas', ['kelas_id', 'nama_kelas', 'jenjang', 'urutan', 'aktif']);
+  if (sKelas.isNew) {
+    var kRows = ${masterKelasJson}.map(function(k) { return [k.kelas_id, k.nama_kelas, k.jenjang, k.urutan, k.aktif]; });
+    if (kRows.length) sKelas.sheet.getRange(2, 1, kRows.length, 5).setValues(kRows);
   }
 
   return 'Setup database TK IT AL-WASHLIYAH selesai! Sync Key: ' + '${syncKey}';
@@ -265,16 +279,16 @@ function syncFullDatabase_(db) {
   );
 
   replaceSheetRows_(ss, 'Siswa',
-    ['siswa_id', 'nis', 'nama_anak', 'jenis_kelamin', 'tanggal_lahir', 'ortu_user_id', 'kelas_aktif', 'status_siswa', 'target_literasi_kelas_b', 'target_kustom_kelas_b'],
+    ['siswa_id', 'nis', 'nama_anak', 'jenis_kelamin', 'tanggal_lahir', 'ortu_user_id', 'kelas_aktif', 'status_siswa', 'target_literasi_kelas_b', 'target_kustom_kelas_b', 'keputusan_kenaikan', 'catatan_kenaikan', 'keputusan_diatur_oleh'],
     (db.siswa || []).map(function(s) {
-      return [s.siswa_id, s.nis, s.nama_anak, s.jenis_kelamin, s.tanggal_lahir, s.ortu_user_id || '', s.kelas_aktif, s.status_siswa, s.target_literasi_kelas_b, s.target_kustom_kelas_b || ''];
+      return [s.siswa_id, s.nis, s.nama_anak, s.jenis_kelamin, s.tanggal_lahir, s.ortu_user_id || '', s.kelas_aktif, s.status_siswa, s.target_literasi_kelas_b, s.target_kustom_kelas_b || '', s.keputusan_kenaikan || 'BELUM_DITENTUKAN', s.catatan_kenaikan || '', s.keputusan_diatur_oleh || ''];
     })
   );
 
   replaceSheetRows_(ss, 'RiwayatKelas',
-    ['riwayat_id', 'siswa_id', 'ta_id', 'nama_ta', 'kelas', 'wali_kelas_id', 'status_akhir'],
+    ['riwayat_id', 'siswa_id', 'ta_id', 'nama_ta', 'kelas', 'wali_kelas_id', 'status_akhir', 'catatan'],
     (db.riwayatKelas || []).map(function(r) {
-      return [r.riwayat_id, r.siswa_id, r.ta_id, r.nama_ta || '', r.kelas, r.wali_kelas_id || '', r.status_akhir];
+      return [r.riwayat_id, r.siswa_id, r.ta_id, r.nama_ta || '', r.kelas, r.wali_kelas_id || '', r.status_akhir, r.catatan || ''];
     })
   );
 
@@ -355,6 +369,13 @@ function syncFullDatabase_(db) {
     })
   );
 
+  replaceSheetRows_(ss, 'Master_Kelas',
+    ['kelas_id', 'nama_kelas', 'jenjang', 'urutan', 'aktif'],
+    (db.masterKelas || []).map(function(k) {
+      return [k.kelas_id, k.nama_kelas, k.jenjang || 'A', Number(k.urutan) || 1, k.aktif !== false];
+    })
+  );
+
   return { synced: true, timestamp: new Date().toISOString() };
 }
 
@@ -406,7 +427,8 @@ function pullFullDatabase_() {
     masterMateri: sheetToObjects_(ss, 'Master_Materi'),
     masterTips: sheetToObjects_(ss, 'Master_Tips'),
     bankMateriHarian: sheetToObjects_(ss, 'Bank_Materi_Harian'),
-    masterAtp: sheetToObjects_(ss, 'Master_ATP')
+    masterAtp: sheetToObjects_(ss, 'Master_ATP'),
+    masterKelas: sheetToObjects_(ss, 'Master_Kelas')
   };
 }
 
@@ -588,18 +610,36 @@ function prosesKenaikanKelasOtomatis() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sSheet = ss.getSheetByName('Siswa');
   var sRows = sSheet.getDataRange().getValues();
-  var naikKeB = 0, lulus = 0;
+  var kelasList = sheetToObjects_(ss, 'Master_Kelas')
+    .filter(function(k) { return k.aktif !== false; })
+    .sort(function(a, b) { return Number(a.urutan || 0) - Number(b.urutan || 0); });
+  if (!kelasList.length) {
+    kelasList = [{ nama_kelas: 'Kelas A' }, { nama_kelas: 'Kelas B' }];
+  }
+  var naik = 0, lulus = 0, tinggal = 0;
   for (var i = 1; i < sRows.length; i++) {
     if (sRows[i][7] !== 'Aktif') continue;
-    if (sRows[i][6] === 'Kelas A') {
-      sSheet.getRange(i + 1, 7).setValue('Kelas B');
-      naikKeB++;
-    } else if (sRows[i][6] === 'Kelas B') {
+    var keputusan = String(sRows[i][10] || 'BELUM_DITENTUKAN');
+    if (keputusan === 'TINGGAL_KELAS') {
+      tinggal++;
+      continue;
+    }
+    var curClass = String(sRows[i][6] || '');
+    var idx = -1;
+    for (var j = 0; j < kelasList.length; j++) {
+      if (String(kelasList[j].nama_kelas) === curClass) { idx = j; break; }
+    }
+    if (idx >= 0 && idx < kelasList.length - 1) {
+      sSheet.getRange(i + 1, 7).setValue(kelasList[idx + 1].nama_kelas);
+      if (sRows[i].length >= 11) sSheet.getRange(i + 1, 11).setValue('BELUM_DITENTUKAN');
+      naik++;
+    } else if (idx === kelasList.length - 1 || curClass === 'Kelas B') {
       sSheet.getRange(i + 1, 7, 1, 2).setValues([['Lulus', 'Lulus']]);
+      if (sRows[i].length >= 11) sSheet.getRange(i + 1, 11).setValue('LULUS_KE_SD');
       lulus++;
     }
   }
-  return { naikKeB: naikKeB, lulus: lulus };
+  return { naik: naik, lulus: lulus, tinggal: tinggal };
 }
 
 function exportAllSheetsJson_() {

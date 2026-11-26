@@ -53,6 +53,8 @@ interface AppContextValue {
   login: (username: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   setupAdmin: (payload: SetupAdminPayload) => Promise<{ ok: boolean; error?: string }>;
   createUserByAdmin: (payload: CreateUserByAdminPayload) => Promise<{ ok: boolean; error?: string }>;
+  deleteUserByAdmin: (userId: string) => Promise<{ ok: boolean; error?: string }>;
+  deleteSiswaWithCleanup: (siswaId: string) => Promise<void>;
   logout: () => Promise<void>;
   changePassword: (lama: string, baru: string) => Promise<{ ok: boolean; error?: string }>;
   updateDb: (updater: (prev: SchoolDatabase) => SchoolDatabase, toastText?: string) => Promise<void>;
@@ -276,6 +278,57 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [token, addToast]
   );
 
+  const deleteUserByAdmin = useCallback(
+    async (userId: string): Promise<{ ok: boolean; error?: string }> => {
+      if (!token) return { ok: false, error: 'Sesi berakhir.' };
+      setSaving(true);
+      try {
+        const res = await fetch('/api/admin/users', {
+          method: 'DELETE',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ user_id: userId }),
+        });
+        const data = await safeJson(res);
+        if (!res.ok || !data?.ok) {
+          const msg = data?.error || 'Gagal menghapus akun pengguna.';
+          addToast(msg, 'error');
+          return { ok: false, error: msg };
+        }
+        const nextDb: SchoolDatabase = {
+          ...dbRef.current,
+          users: Array.isArray(data.users)
+            ? data.users
+            : dbRef.current.users.filter((u) => u.user_id !== userId),
+          siswa: Array.isArray(data.siswa)
+            ? data.siswa
+            : dbRef.current.siswa.map((s) =>
+                s.ortu_user_id === userId ? { ...s, ortu_user_id: '' } : s
+              ),
+          riwayatKelas: Array.isArray(data.riwayatKelas)
+            ? data.riwayatKelas
+            : dbRef.current.riwayatKelas.map((r) =>
+                r.wali_kelas_id === userId ? { ...r, wali_kelas_id: '' } : r
+              ),
+        };
+        dbRef.current = nextDb;
+        setDb(nextDb);
+        if (data.syncStatus) setSyncStatus(data.syncStatus);
+        addToast('Akun pengguna berhasil dihapus.', 'success');
+        return { ok: true };
+      } catch {
+        const msg = 'Tidak dapat terhubung ke server aplikasi.';
+        addToast(msg, 'error');
+        return { ok: false, error: msg };
+      } finally {
+        setSaving(false);
+      }
+    },
+    [token, addToast]
+  );
+
   const logout = useCallback(async () => {
     if (token) {
       try {
@@ -349,6 +402,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     },
     [token, addToast]
+  );
+
+  const deleteSiswaWithCleanup = useCallback(
+    async (siswaId: string) => {
+      const target = dbRef.current.siswa.find((s) => s.siswa_id === siswaId);
+      const label = target ? `Data murid ${target.nama_anak} dan seluruh catatannya dihapus.` : 'Data murid dihapus.';
+      await updateDb(
+        (prev) => ({
+          ...prev,
+          siswa: prev.siswa.filter((s) => s.siswa_id !== siswaId),
+          riwayatKelas: prev.riwayatKelas.filter((r) => r.siswa_id !== siswaId),
+          antropometri: prev.antropometri.filter((a) => a.siswa_id !== siswaId),
+          literasi: prev.literasi.filter((l) => l.siswa_id !== siswaId),
+          keagamaan: prev.keagamaan.filter((k) => k.siswa_id !== siswaId),
+          kaihHarian: prev.kaihHarian.filter((k) => k.siswa_id !== siswaId),
+          kaihFotoBulanan: prev.kaihFotoBulanan.filter((f) => f.siswa_id !== siswaId),
+          ulasanOrtu: prev.ulasanOrtu.filter((u) => u.siswa_id !== siswaId),
+          logMateriHarian: prev.logMateriHarian.filter((l) => l.id_siswa !== siswaId),
+          daftarHadir: prev.daftarHadir.filter((d) => d.siswa_id !== siswaId),
+          asesmenAnekdot: prev.asesmenAnekdot.filter((a) => a.siswa_id !== siswaId),
+          asesmenHasilKarya: prev.asesmenHasilKarya.filter((k) => k.siswa_id !== siswaId),
+          asesmenCeklis: prev.asesmenCeklis.filter((c) => c.siswa_id !== siswaId),
+        }),
+        label
+      );
+    },
+    [updateDb]
   );
 
   const resetDemoDatabase = useCallback(async () => {
@@ -502,6 +582,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         login,
         setupAdmin,
         createUserByAdmin,
+        deleteUserByAdmin,
+        deleteSiswaWithCleanup,
         logout,
         changePassword,
         updateDb,

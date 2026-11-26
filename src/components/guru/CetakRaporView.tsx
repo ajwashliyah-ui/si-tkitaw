@@ -4,6 +4,7 @@ import { useApp } from '../../context/AppContext';
 import { KelasType } from '../../types';
 import { buildMonthlyRapor } from '../../utils/rapor';
 import { computeAttendanceRekap } from '../../utils/attendance';
+import { getMasterKelasList, isKelasLanjutan } from '../../utils/kelas';
 import { StarSequenceSvg } from '../common/StarSequenceSvg';
 import { AdaptiveMascotSvg } from '../common/AdaptiveMascotSvg';
 
@@ -19,8 +20,11 @@ interface CetakRaporViewProps {
 export const CetakRaporView: React.FC<CetakRaporViewProps> = ({ lockedSiswaId }) => {
   const { db, schoolInfo, currentUser } = useApp();
 
+  const kelasList = useMemo(() => getMasterKelasList(db), [db]);
   const [kelasFilter, setKelasFilter] = useState<KelasType>(() =>
-    currentUser?.role === 'Guru' && currentUser.kelas_ampu ? currentUser.kelas_ampu : 'Kelas A'
+    currentUser?.role === 'Guru' && currentUser.kelas_ampu
+      ? currentUser.kelas_ampu
+      : kelasList[0]?.nama_kelas || 'Kelas A'
   );
   const [selectedSiswaId, setSelectedSiswaId] = useState<string>(lockedSiswaId || 'ALL_OR_FIRST');
   const [batchPrintAll, setBatchPrintAll] = useState<boolean>(false);
@@ -104,8 +108,11 @@ export const CetakRaporView: React.FC<CetakRaporViewProps> = ({ lockedSiswaId })
                   }}
                   className="isian-kontrol"
                 >
-                  <option value="Kelas A">Kelas A</option>
-                  <option value="Kelas B">Kelas B</option>
+                  {kelasList.map((k) => (
+                    <option key={k.kelas_id} value={k.nama_kelas}>
+                      {k.nama_kelas}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label className="block">
@@ -234,9 +241,9 @@ export const CetakRaporView: React.FC<CetakRaporViewProps> = ({ lockedSiswaId })
                       <div className="flex justify-between gap-2">
                         <span className="text-[#55665a]">Track Literasi</span>
                         <span className="font-semibold text-[#1d2b21]">
-                          {rapor.siswa.kelas_aktif === 'Kelas B'
+                          {isKelasLanjutan(db, rapor.siswa.kelas_aktif)
                             ? rapor.siswa.target_literasi_kelas_b
-                            : 'Standar Kelas A'}
+                            : `Standar ${rapor.siswa.kelas_aktif}`}
                         </span>
                       </div>
                       <div className="flex justify-between gap-2">

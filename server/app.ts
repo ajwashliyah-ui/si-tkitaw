@@ -408,6 +408,8 @@ export function createApiApp(): express.Express {
     }
 
     const allowedRole: UserRole = role === 'Guru' ? 'Guru' : 'OrangTua';
+    const cleanKelasAmpu =
+      allowedRole === 'Guru' ? String(kelas_ampu || '').trim().slice(0, 60) || 'Kelas A' : '';
     const newUser: User = {
       user_id: `USR-${Date.now().toString().slice(-6)}`,
       username: cleanUser,
@@ -415,7 +417,7 @@ export function createApiApp(): express.Express {
       role: allowedRole,
       nama_lengkap: cleanNama,
       no_hp: String(no_hp || '').trim(),
-      kelas_ampu: allowedRole === 'Guru' ? (kelas_ampu === 'Kelas B' ? 'Kelas B' : 'Kelas A') : '',
+      kelas_ampu: cleanKelasAmpu,
       status_aktif: true,
     };
 
@@ -424,6 +426,53 @@ export function createApiApp(): express.Express {
     void triggerAutoSyncToSheets(db);
 
     res.json({ ok: true, user: newUser });
+  });
+
+  // Admin-only account deletion (protects Admin accounts and detaches student/class links)
+  app.delete('/api/admin/users', (req, res) => {
+    const session = getAuthenticatedSession(req);
+    if (!session || session.user.role !== 'Admin') {
+      res.status(403).json({ ok: false, error: 'Hanya Admin yang dapat menghapus akun pengguna.' });
+      return;
+    }
+
+    const rawId = (req.body as { user_id?: unknown } | undefined)?.user_id ?? req.query?.user_id;
+    const targetUserId = typeof rawId === 'string' ? rawId.trim() : '';
+    if (!targetUserId) {
+      res.status(400).json({ ok: false, error: 'ID akun pengguna wajib disertakan.' });
+      return;
+    }
+
+    const db = readDb();
+    const target = db.users.find((u) => u.user_id === targetUserId);
+    if (!target) {
+      res.status(404).json({ ok: false, error: 'Akun pengguna tidak ditemukan.' });
+      return;
+    }
+    if (target.role === 'Admin' || target.user_id === session.user.user_id) {
+      res.status(403).json({ ok: false, error: 'Akun Admin sekolah tidak dapat dihapus.' });
+      return;
+    }
+
+    db.users = db.users.filter((u) => u.user_id !== targetUserId);
+    db.siswa = db.siswa.map((s) =>
+      s.ortu_user_id === targetUserId ? { ...s, ortu_user_id: '' } : s
+    );
+    db.riwayatKelas = db.riwayatKelas.map((r) =>
+      r.wali_kelas_id === targetUserId ? { ...r, wali_kelas_id: '' } : r
+    );
+
+    writeDb(db);
+    void triggerAutoSyncToSheets(db);
+
+    res.json({
+      ok: true,
+      deletedUserId: targetUserId,
+      users: db.users,
+      siswa: db.siswa,
+      riwayatKelas: db.riwayatKelas,
+      syncStatus,
+    });
   });
 
   app.post('/api/login', (req, res) => {
@@ -533,29 +582,83 @@ export function createApiApp(): express.Express {
     }
     const currentDb = readDb();
     const currentUserMap = new Map(currentDb.users.map((u) => [u.user_id, u]));
+    const isAdmin = session.user.role === 'Admin';
+    const isGuru = session.user.role === 'Guru';
+
+    let nextUsers = currentDb.users;
+    if (isAdmin && Array.isArray(incoming.users)) {
+      const mappedUsers = incoming.users.map((u) => {
+        const existing = currentUserMap.get(u.user_id);
+        if (existing?.role === 'Admin') {
+          return {
+            ...u,
+            role: 'Admin' as const,
+            status_aktif: true,
+            password_hash:
+              u.password && u.password.trim()
+                ? hashPasswordScrypt(u.password)
+                : existing.password_hash,
+          };
+        }
+        if (u.password && u.password.trim()) {
+          const { password: _pw, ...rest } = u;
+          return { ...rest, password_hash: hashPasswordScrypt(u.password) };
+        }
+        return {
+          ...u,
+          password_hash: u.password_hash || existing?.password_hash || '',
+        };
+      });
+      const existingAdmins = currentDb.users.filter((u) => u.role === 'Admin');
+      for (const adm of existingAdmins) {
+        if (!mappedUsers.some((u) => u.user_id === adm.user_id)) {
+          mappedUsers.unshift(adm);
+        }
+      }
+      nextUsers = mappedUsers;
+    }
+
+    let nextSiswa = currentDb.siswa;
+    if (isAdmin) {
+      nextSiswa = incoming.siswa;
+    } else if (isGuru) {
+      const incomingMap = new Map(incoming.siswa.map((s) => [s.siswa_id, s]));
+      nextSiswa = currentDb.siswa.map((s) => incomingMap.get(s.siswa_id) || s);
+    }
+
     const nextDb: SchoolDatabase = {
-      ...incoming,
-      pengaturanSekolah:
-        session.user.role === 'Admin'
-          ? {
-              ...incoming.pengaturanSekolah,
-              admin_claimed: isAdminClaimed(currentDb) || Boolean(incoming.pengaturanSekolah.admin_claimed),
-            }
-          : currentDb.pengaturanSekolah,
-      users:
-        session.user.role === 'Admin'
-          ? incoming.users.map((u) => {
-              const existing = currentUserMap.get(u.user_id);
-              if (u.password && u.password.trim()) {
-                const { password: _pw, ...rest } = u;
-                return { ...rest, password_hash: hashPasswordScrypt(u.password) };
-              }
-              return {
-                ...u,
-                password_hash: u.password_hash || existing?.password_hash || '',
-              };
-            })
-          : currentDb.users,
+      ...currentDb,
+      ...(isAdmin ? incoming : {}),
+      ...(isGuru
+        ? {
+            antropometri: incoming.antropometri ?? currentDb.antropometri,
+            literasi: incoming.literasi ?? currentDb.literasi,
+            keagamaan: incoming.keagamaan ?? currentDb.keagamaan,
+            logMateriHarian: incoming.logMateriHarian ?? currentDb.logMateriHarian,
+            daftarHadir: incoming.daftarHadir ?? currentDb.daftarHadir,
+            asesmenAnekdot: incoming.asesmenAnekdot ?? currentDb.asesmenAnekdot,
+            asesmenHasilKarya: incoming.asesmenHasilKarya ?? currentDb.asesmenHasilKarya,
+            asesmenCeklis: incoming.asesmenCeklis ?? currentDb.asesmenCeklis,
+            riwayatKelas: incoming.riwayatKelas ?? currentDb.riwayatKelas,
+            ulasanOrtu: incoming.ulasanOrtu ?? currentDb.ulasanOrtu,
+          }
+        : {}),
+      ...(session.user.role === 'OrangTua'
+        ? {
+            kaihHarian: incoming.kaihHarian ?? currentDb.kaihHarian,
+            kaihFotoBulanan: incoming.kaihFotoBulanan ?? currentDb.kaihFotoBulanan,
+            ulasanOrtu: incoming.ulasanOrtu ?? currentDb.ulasanOrtu,
+          }
+        : {}),
+      pengaturanSekolah: isAdmin
+        ? {
+            ...incoming.pengaturanSekolah,
+            admin_claimed:
+              isAdminClaimed(currentDb) || Boolean(incoming.pengaturanSekolah.admin_claimed),
+          }
+        : currentDb.pengaturanSekolah,
+      users: nextUsers,
+      siswa: nextSiswa,
     };
 
     writeDb(nextDb);
@@ -632,14 +735,26 @@ export function createApiApp(): express.Express {
       res.status(400).json({ ok: false, error: result.error || 'Gagal menarik data dari Google Sheets.' });
       return;
     }
+    const pulledUsers: User[] = Array.isArray(result.data.users) ? result.data.users : db.users;
+    const currentAdmins = db.users.filter((u) => u.role === 'Admin');
+    const mergedUsers = [...pulledUsers];
+    for (const adm of currentAdmins) {
+      if (!mergedUsers.some((u) => u.user_id === adm.user_id || u.role === 'Admin')) {
+        mergedUsers.unshift(adm);
+      }
+    }
+
     const merged: SchoolDatabase = {
       ...db,
       ...result.data,
+      users: mergedUsers,
       pengaturanSekolah: {
         ...db.pengaturanSekolah,
         ...(result.data.pengaturanSekolah || {}),
         gas_webapp_url: targetUrl,
         gas_sync_key: targetKey,
+        admin_claimed:
+          isAdminClaimed(db) || Boolean(result.data.pengaturanSekolah?.admin_claimed),
       },
     };
     writeDb(merged);

@@ -757,5 +757,21 @@ export function createInitialSeedDatabase(): SchoolDatabase {
       },
     ],
     masterAtp: MASTER_ATP_SEED,
+    masterKelas: [
+      {
+        kelas_id: 'KLS-A',
+        nama_kelas: 'Kelas A',
+        jenjang: 'A',
+        urutan: 1,
+        aktif: true,
+      },
+      {
+        kelas_id: 'KLS-B',
+        nama_kelas: 'Kelas B',
+        jenjang: 'B',
+        urutan: 2,
+        aktif: true,
+      },
+    ],
   };
 }

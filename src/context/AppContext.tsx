@@ -178,10 +178,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               data?.error ||
               (res.status === 404
                 ? 'Endpoint /api tidak aktif di host ini. Pastikan vercel.json terpasang atau deploy ulang.'
-                : 'Gagal masuk. Periksa akun Anda.'),
+                : `Gagal masuk (kode ${res.status}). Periksa akun Anda.`),
           };
         }
-        await loadDbWithToken(data.token);
+        if (data.data) {
+          dbRef.current = data.data;
+          setDb(data.data);
+          setSchoolInfo(data.data.pengaturanSekolah);
+          if (data.syncStatus) setSyncStatus(data.syncStatus);
+        } else {
+          await loadDbWithToken(data.token);
+        }
         setToken(data.token);
         setCurrentUser(data.user);
         addToast(`Selamat datang, ${data.user.nama_lengkap}`, 'success');
@@ -210,11 +217,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               data?.error ||
               (res.status === 404
                 ? 'Endpoint /api tidak aktif di host ini. Pastikan vercel.json terpasang.'
-                : 'Gagal mendaftarkan Admin sekolah.'),
+                : `Gagal mendaftarkan Admin sekolah (kode ${res.status}).`),
           };
         }
         setAdminClaimed(true);
-        await loadDbWithToken(data.token);
+        if (data.data) {
+          dbRef.current = data.data;
+          setDb(data.data);
+          setSchoolInfo(data.data.pengaturanSekolah);
+          if (data.syncStatus) setSyncStatus(data.syncStatus);
+        } else {
+          await loadDbWithToken(data.token);
+        }
         setToken(data.token);
         setCurrentUser(data.user);
         triggerCelebration('Akun Admin siap!');
@@ -415,7 +429,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const res = await fetch('/api/sheets/push', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          url: dbRef.current.pengaturanSekolah.gas_webapp_url,
+          syncKey: dbRef.current.pengaturanSekolah.gas_sync_key,
+        }),
       });
       const json = await res.json();
       if (json.syncStatus) setSyncStatus(json.syncStatus);
@@ -438,11 +459,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const res = await fetch('/api/sheets/pull', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          url: dbRef.current.pengaturanSekolah.gas_webapp_url,
+          syncKey: dbRef.current.pengaturanSekolah.gas_sync_key,
+        }),
       });
       const json = await res.json();
       if (json.syncStatus) setSyncStatus(json.syncStatus);
       if (res.ok && json.ok && json.data) {
+        dbRef.current = json.data;
         setDb(json.data);
         setSchoolInfo(json.data.pengaturanSekolah);
         addToast('Data terbaru berhasil ditarik dari Google Sheets.', 'success');

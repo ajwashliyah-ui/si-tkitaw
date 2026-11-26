@@ -110,13 +110,37 @@ function verifySignedToken(token: string): SessionEntry | null {
   }
 }
 
+function sanitizeDbForRole(db: SchoolDatabase, role: UserRole): SchoolDatabase {
+  const isAdmin = role === 'Admin';
+  return {
+    ...db,
+    pengaturanSekolah: isAdmin
+      ? db.pengaturanSekolah
+      : { ...db.pengaturanSekolah, gas_sync_key: '' },
+    users: isAdmin ? db.users : db.users.map((u) => ({ ...u, password_hash: '' })),
+  };
+}
+
 function readDb(): SchoolDatabase {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
     if (!fs.existsSync(DB_FILE)) {
-      const seed = memoryDbCache || createInitialSeedDatabase();
+      let seed: SchoolDatabase | null = memoryDbCache;
+      if (!seed && IS_VERCEL) {
+        const bundledDbPath = path.resolve(process.cwd(), 'data', 'db.json');
+        if (fs.existsSync(bundledDbPath)) {
+          try {
+            seed = JSON.parse(fs.readFileSync(bundledDbPath, 'utf8')) as SchoolDatabase;
+          } catch {
+            seed = null;
+          }
+        }
+      }
+      if (!seed) {
+        seed = createInitialSeedDatabase();
+      }
       memoryDbCache = seed;
       fs.writeFileSync(DB_FILE, JSON.stringify(seed, null, 2), 'utf8');
       return seed;
@@ -317,7 +341,14 @@ export function createApiApp(): express.Express {
     };
     const token = issueSignedToken(safeUser);
 
-    res.json({ ok: true, token, user: safeUser, adminClaimed: true });
+    res.json({
+      ok: true,
+      token,
+      user: safeUser,
+      adminClaimed: true,
+      data: sanitizeDbForRole(db, 'Admin'),
+      syncStatus,
+    });
   });
 
   // Public self-registration is disabled; Guru & Orang Tua accounts are created exclusively by Admin
@@ -425,7 +456,13 @@ export function createApiApp(): express.Express {
     };
     const token = issueSignedToken(safeUser);
 
-    res.json({ ok: true, token, user: safeUser });
+    res.json({
+      ok: true,
+      token,
+      user: safeUser,
+      data: sanitizeDbForRole(db, user.role),
+      syncStatus,
+    });
   });
 
   app.post('/api/logout', (req, res) => {
@@ -476,20 +513,9 @@ export function createApiApp(): express.Express {
       return;
     }
     const db = readDb();
-    const isAdmin = session.user.role === 'Admin';
-    const sanitizedUsers = isAdmin
-      ? db.users
-      : db.users.map((u) => ({ ...u, password_hash: '' }));
-    const sanitizedCfg = isAdmin
-      ? db.pengaturanSekolah
-      : { ...db.pengaturanSekolah, gas_sync_key: '' };
     res.json({
       ok: true,
-      data: {
-        ...db,
-        pengaturanSekolah: sanitizedCfg,
-        users: sanitizedUsers,
-      },
+      data: sanitizeDbForRole(db, session.user.role),
       syncStatus,
     });
   });
@@ -573,13 +599,11 @@ export function createApiApp(): express.Express {
       res.status(403).json({ ok: false, error: 'Hanya Admin yang dapat mengirim data ke Sheet.' });
       return;
     }
+    const { url, syncKey } = (req.body || {}) as { url?: string; syncKey?: string };
     const db = readDb();
-    const result = await callGasBridge(
-      db.pengaturanSekolah.gas_webapp_url,
-      db.pengaturanSekolah.gas_sync_key || 'WASHLIYAH_SYNC_2026',
-      'syncFullDb',
-      db
-    );
+    const targetUrl = db.pengaturanSekolah.gas_webapp_url || url || '';
+    const targetKey = db.pengaturanSekolah.gas_sync_key || syncKey || 'WASHLIYAH_SYNC_2026';
+    const result = await callGasBridge(targetUrl, targetKey, 'syncFullDb', db);
     if (result.ok) {
       syncStatus = {
         connected: true,
@@ -599,12 +623,11 @@ export function createApiApp(): express.Express {
       res.status(403).json({ ok: false, error: 'Hanya Admin yang dapat menarik data dari Sheet.' });
       return;
     }
+    const { url, syncKey } = (req.body || {}) as { url?: string; syncKey?: string };
     const db = readDb();
-    const result = await callGasBridge(
-      db.pengaturanSekolah.gas_webapp_url,
-      db.pengaturanSekolah.gas_sync_key || 'WASHLIYAH_SYNC_2026',
-      'pullFullDb'
-    );
+    const targetUrl = db.pengaturanSekolah.gas_webapp_url || url || '';
+    const targetKey = db.pengaturanSekolah.gas_sync_key || syncKey || 'WASHLIYAH_SYNC_2026';
+    const result = await callGasBridge(targetUrl, targetKey, 'pullFullDb');
     if (!result.ok || !result.data) {
       res.status(400).json({ ok: false, error: result.error || 'Gagal menarik data dari Google Sheets.' });
       return;
@@ -615,8 +638,8 @@ export function createApiApp(): express.Express {
       pengaturanSekolah: {
         ...db.pengaturanSekolah,
         ...(result.data.pengaturanSekolah || {}),
-        gas_webapp_url: db.pengaturanSekolah.gas_webapp_url,
-        gas_sync_key: db.pengaturanSekolah.gas_sync_key,
+        gas_webapp_url: targetUrl,
+        gas_sync_key: targetKey,
       },
     };
     writeDb(merged);

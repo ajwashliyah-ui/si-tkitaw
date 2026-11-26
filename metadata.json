@@ -1,0 +1,8 @@
+{
+  "name": "Remix TK IT Al-Washliyah — Sistem Laporan Perkembangan Anak",
+  "description": "Sistem Informasi Laporan Perkembangan Anak, Bank Materi Harian, Kalender 7 KAIH, Daftar Hadir, Asesmen Autentik, dan Cetak Rapor Bulanan untuk TK IT Al-Washliyah.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

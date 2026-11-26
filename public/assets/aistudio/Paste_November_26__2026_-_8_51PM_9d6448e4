@@ -1,0 +1,280 @@
+# MASTER PROMPT: MODUL DAFTAR HADIR (DOWNLOAD EXCEL) & 3 SUB-MENU ASESMEN AUTENTIK
+**Identitas Lembaga:** TK IT Al-Washliyah | NPSN: 69991416 | Jl. Gunung Mangga, Kel. Sukamajukaler, Kec. Indihiang, Kota Tasikmalaya, Jawa Barat | Kepala Sekolah: Obi Abdulah Sapari.
+**Arsitektur:** Frontend Static GitHub Pages (HTML5, Tailwind CSS CDN, Vanilla JS, SheetJS `xlsx.full.min.js` untuk Download Excel) + Backend Google Apps Script (Web App API) + Database Google Sheets + Storage Google Drive.
+
+---
+
+## 1. MENU DAFTAR HADIR & REKAPAN EXCEL
+
+### A. Tampilan Input Absensi Harian (Guru & Admin)
+- Filter atas: **Tanggal** (default hari ini), **Kelas** (`Semua Kelas` / `Kelompok A` / `Kelompok B`), dan tombol cepat **"Simpan Daftar Hadir"**.
+- Menampilkan daftar nama seluruh murid sesuai filter dalam bentuk kartu/baris rapi yang nyaman di HP.
+- Pilihan **Radio Button** (atau segmented button warna-warni) per anak:
+  - `HADIR` (hijau — **DEFAULT otomatis terpilih**)
+  - `SAKIT` (kuning/amber)
+  - `IZIN` (biru)
+  - `ALPA` (merah)
+- Jika absensi pada tanggal tersebut sudah pernah diisi, sistem otomatis memuat data tersimpan sehingga guru bisa mengedit tanpa membuat duplikat baris.
+
+### B. Rekapan Bulanan & Semester + Download Excel (`.xlsx`)
+- Sediakan 2 tab rekap: **Rekap Bulanan** (pilih Bulan & Tahun) dan **Rekap Semester** (pilih `Semester 1` [Juli–Desember] atau `Semester 2` [Januari–Juni] + Tahun Ajaran).
+- Tabel rekapitulasi per anak menampilkan kolom:
+  `No` | `NIS` | `Nama Anak` | `Kelas` | `H (Hadir)` | `S (Sakit)` | `I (Izin)` | `A (Alpa)` | `Total Hari Efektif` | `% Kehadiran`.
+- **Tombol "Download Excel (.xlsx)"** menggunakan library CDN **SheetJS (`xlsx.full.min.js`)**:
+  - Menghasilkan file `.xlsx` rapi dengan judul kop `REKAP DAFTAR HADIR TK IT AL-WASHLIYAH`, periode bulan/semester, nama kelas, tabel rekap (H, S, I, A), serta baris total di bagian bawah.
+  - Khusus rekap semester, data jumlah `S`, `I`, `A` juga otomatis tersinkronisasi ke bagian **Presensi Kehadiran** pada cetak rapor semester.
+
+---
+
+## 2. SISTEM ASESMEN AUTENTIK BERBASIS PENGAMATAN (3 SUB-MENU)
+
+Semua asesmen bersifat kualitatif/pengamatan (bukan nilai angka) dan dibagi menjadi 3 sub-menu:
+
+### Sub-Menu 1: Catatan Anekdot
+- **Form Input Guru:**
+  - `Nama Anak` (dropdown siswa sesuai kelas)
+  - `Tanggal` (date picker, default hari ini)
+  - `Deskripsi Kejadian` (textarea — perilaku/peristiwa faktual yang teramati)
+  - `Analisis Capaian` (3 kolom terpisah agar terstruktur rapi sesuai Kurikulum Merdeka PAUD):
+    1. **Nilai Agama & Budi Pekerti (NABP)**
+    2. **Jati Diri (JD)**
+    3. **Dasar-Dasar Literasi & STEAM (LMSTRS)**
+  - `Umpan Balik` (textarea — tindak lanjut/dukungan guru dan saran kolaborasi orang tua)
+- Dilengkapi daftar riwayat anekdot per anak dengan filter bulan & semester, serta tombol edit/hapus.
+
+### Sub-Menu 2: Hasil Karya Anak (Hemat Ruang Google Drive)
+- **Aturan Hemat Kuota Drive (WAJIB):**
+  - Batasi unggahan foto maksimal **3 Hasil Karya per anak per bulan** (tampilkan indikator kuota di form, misal: *"Kuota foto bulan ini untuk [Nama Anak]: 1/3"*). Jika sudah mencapai 3/3 pada bulan tersebut, tombol upload otomatis menginformasikan batas bulanan telah penuh (guru tetap bisa mengganti/menghapus salah satu foto bulan tersebut agar kuota terbuka kembali dan file lama di Google Drive otomatis dihapus/ditrash).
+  - **Kompresi Wajib di Browser (HTML5 Canvas):** Resize lebar maks `800px`, format `image/jpeg`, kualitas `0.7` (~80–120 KB per foto) sebelum dikirim sebagai Base64 ke Google Apps Script.
+  - GAS menyimpan foto ke subfolder Drive `Foto_Hasil_Karya_TK_IT_AL_WASHLIYAH`, menyetel izin *Anyone with link can view*, dan menyimpan `foto_drive_id` serta URL stabil `https://drive.google.com/thumbnail?id=FILE_ID&sz=w1000`.
+- **Form Input Guru:**
+  - `Nama Anak`
+  - `Tanggal` (otomatis mendeteksi `periode_bulan` `YYYY-MM` untuk cek kuota 1–3 foto/bulan)
+  - `Foto Karya` (Tombol Upload Gambar dari galeri/kamera HP + preview gambar + indikator ukuran file setelah kompresi, serta opsi fallback tempel URL gambar jika sudah ada di Drive)
+  - `Deskripsi Karya` (cerita anak tentang karyanya & proses pembuatannya)
+  - `Analisis Capaian` (3 kolom terpisah):
+    1. **Nilai Agama & Budi Pekerti (NABP)**
+    2. **Jati Diri (JD)**
+    3. **Dasar-Dasar Literasi & STEAM (LMSTRS)**
+- Tampilkan dalam bentuk galeri portofolio per anak yang juga bisa dilihat oleh Orang Tua di dashboard-nya.
+
+### Sub-Menu 3: Asesmen Ceklis (Berbasis ATP Kelompok A & B, Semester 1 & 2)
+- **Form Input Guru:**
+  - `Nama Anak` (otomatis mendeteksi apakah siswa berada di `Kelompok A` atau `Kelompok B`)
+  - `Semester` (`Semester 1` / `Semester 2`)
+  - `Tanggal Pengamatan`
+  - `Elemen` (filter dropdown: `Nilai Agama & Budi Pekerti`, `Jati Diri`, `Literasi & STEAM`)
+  - `Tujuan Pembelajaran` (dropdown otomatis memuat indikator ATP dari sheet `Master_ATP` yang cocok dengan **Kelompok Anak** dan **Semester** terpilih; sediakan kotak pencarian cepat)
+  - `Konteks` (kegiatan bermain/belajar saat pengamatan berlangsung, misal: *Sentra Balok*, *Jurnal Pagi*, *Makan Bekal*)
+  - `Status` (pilihan radio button jelas: `Belum Muncul` / `Sudah Muncul`)
+  - `Kejadian yang Teramati` (textarea — bukti perilaku konkret yang terlihat)
+- Sediakan mode **"Rekap Ceklis Per Anak"** agar guru mudah melihat indikator ATP mana saja yang sudah muncul dan belum muncul selama 1 semester.
+
+---
+
+## 3. STRUKTUR SHEET DATABASE BARU DI GOOGLE SHEETS
+
+Tambahkan 5 sheet berikut ke fungsi `setupDatabase()` di `Setup.gs`:
+1. `DaftarHadir` (`absen_id`, `tanggal`, `periode_bulan`, `semester`, `ta_id`, `siswa_id`, `nama_anak`, `kelas`, `status`, `diinput_oleh`, `updated_at`)
+2. `Asesmen_Anekdot` (`anekdot_id`, `tanggal`, `periode_bulan`, `semester`, `ta_id`, `siswa_id`, `nama_anak`, `kelas`, `deskripsi_kejadian`, `analisis_nabp`, `analisis_jd`, `analisis_lmstrs`, `umpan_balik`, `guru_nama`, `updated_at`)
+3. `Asesmen_HasilKarya` (`karya_id`, `tanggal`, `periode_bulan`, `semester`, `ta_id`, `siswa_id`, `nama_anak`, `kelas`, `foto_drive_id`, `foto_url`, `deskripsi_karya`, `analisis_nabp`, `analisis_jd`, `analisis_lmstrs`, `guru_nama`, `updated_at`)
+4. `Asesmen_Ceklis` (`ceklis_id`, `tanggal`, `periode_bulan`, `semester`, `ta_id`, `siswa_id`, `nama_anak`, `kelas`, `elemen`, `kode_atp`, `tujuan_pembelajaran`, `konteks`, `status_muncul`, `kejadian_teramati`, `guru_nama`, `updated_at`)
+5. `Master_ATP` (`atp_uid`, `kelompok`, `semester_target`, `elemen`, `kode_atp`, `tujuan_pembelajaran`, `aktif`)
+   - Nilai `semester_target`: `Semester 1`, `Semester 2`, atau `Semester 1 & 2` (jika `Semester 1 & 2`, indikator tampil di kedua semester).
+
+---
+
+## 4. DATA LENGKAP `Master_ATP` (WAJIB DI-SEED PENUH 168 BARIS TANPA DIPOTONG)
+
+### BAGIAN A: KELOMPOK A (USIA 4–5 TAHUN) — 84 INDIKATOR
+
+#### Elemen 1: Nilai Agama dan Budi Pekerti (NABP) — Kelompok A
+- `A-NABP.1.1` | `Semester 1 & 2` | `NABP.1.1` | Murid menyebutkan nama Tuhan sebagai pencipta dirinya dan benda-benda ciptaan Tuhan di lingkungan sekitar.
+- `A-NABP.1.2` | `Semester 1 & 2` | `NABP.1.2` | Murid mengenal nama agamanya dan tempat ibadah atau kegiatan keagamaan yang biasa dilakukan di keluarga.
+- `A-NABP.1.3` | `Semester 1 & 2` | `NABP.1.3` | Murid mengenal simbol-simbol dan atribut sederhana yang berkaitan dengan agamanya.
+- `A-NABP.1.4` | `Semester 1 & 2` | `NABP.1.4` | Murid meniru ucapan doa harian sederhana (sebelum/sesudah makan, belajar) dan gerakan ibadah dengan contoh pendidik.
+- `A-NABP.1.5` | `Semester 1 & 2` | `NABP.1.5` | Murid terbiasa mengucapkan doa harian sebelum dan sesudah melakukan kegiatan sehari-hari.
+- `A-NABP.1.6` | `Semester 1 & 2` | `NABP.1.6` | Murid menunjukkan perilaku kasih sayang kepada sesama sebagai wujud pengenalan ajaran agamanya.
+- `A-NABP.2.1` | `Semester 1` | `NABP.2.1` | Murid membedakan kondisi tubuh atau tangan saat bersih dan kotor.
+- `A-NABP.2.2` | `Semester 1` | `NABP.2.2` | Murid mempraktikkan cara mencuci tangan dengan sabun dan menggosok gigi dengan bimbingan pendidik.
+- `A-NABP.2.3` | `Semester 1` | `NABP.2.3` | Murid mengenal makanan dan minuman sehat yang baik untuk pertumbuhan tubuhnya.
+- `A-NABP.2.4` | `Semester 1` | `NABP.2.4` | Murid menceritakan cara merawat tubuh (seperti makan buah/sayur dan tidur siang/istirahat).
+- `A-NABP.2.5` | `Semester 2` | `NABP.2.5` | Murid mengenali situasi, benda tajam/panas, atau tempat yang membahayakan keselamatan dirinya.
+- `A-NABP.2.6` | `Semester 2` | `NABP.2.6` | Murid bersedia menghindari benda/situasi berbahaya dengan arahan pendidik sebagai wujud rasa syukur atas tubuhnya.
+- `A-NABP.3.1` | `Semester 1` | `NABP.3.1` | Murid mengamati dan menyebutkan perbedaan fisik sederhana (seperti bentuk rambut atau tinggi badan) antara dirinya dan teman.
+- `A-NABP.3.2` | `Semester 1` | `NABP.3.2` | Murid mau bersikap ramah dan bermain bersama teman yang memiliki perbedaan fisik atau latar belakang.
+- `A-NABP.3.3` | `Semester 1` | `NABP.3.3` | Murid meniru ucapan 4 kata santun (maaf, tolong, terima kasih, permisi) dalam interaksi sehari-hari.
+- `A-NABP.3.4` | `Semester 2` | `NABP.3.4` | Murid terbiasa mengucapkan terima kasih saat menerima bantuan dan meminta maaf saat bersalah.
+- `A-NABP.3.5` | `Semester 2` | `NABP.3.5` | Murid menunjukkan sikap mau berbagi benda atau membantu teman yang mengalami kesulitan ringan.
+- `A-NABP.3.6` | `Semester 2` | `NABP.3.6` | Murid mendengarkan ketika teman atau pendidik sedang berbicara di kelas.
+- `A-NABP.4.1` | `Semester 1` | `NABP.4.1` | Murid mengenal tanaman dan hewan peliharaan sebagai sesama makhluk ciptaan Tuhan YME.
+- `A-NABP.4.2` | `Semester 2` | `NABP.4.2` | Murid menceritakan cara sederhana menyayangi hewan dan tidak merusak tanaman.
+- `A-NABP.4.3` | `Semester 1` | `NABP.4.3` | Murid mempraktikkan kegiatan menyiram tanaman dan memberi makan hewan peliharaan bersama teman/pendidik.
+- `A-NABP.4.4` | `Semester 2` | `NABP.4.4` | Murid terbiasa membuang sampah pada tempatnya setelah selesai makan atau berkegiatan.
+- `A-NABP.4.5` | `Semester 2` | `NABP.4.5` | Murid mengenali kondisi lingkungan yang bersih dan yang kotor/berantakan.
+- `A-NABP.4.6` | `Semester 2` | `NABP.4.6` | Murid ikut serta dalam kegiatan merapikan dan menjaga kebersihan lingkungan kelasnya.
+
+#### Elemen 2: Jati Diri (JD) — Kelompok A
+- `A-JD.1.1` | `Semester 1` | `JD.1.1` | Murid menyebutkan nama panggilan, usia, jenis kelamin, dan ciri fisik dirinya secara sederhana.
+- `A-JD.1.2` | `Semester 1` | `JD.1.2` | Murid mengenal anggota keluarga intinya (ayah, ibu, kakak/adik) dan panggilan dalam keluarganya.
+- `A-JD.1.3` | `Semester 1` | `JD.1.3` | Murid menunjukkan dan menyebutkan mainan atau warna yang disukainya.
+- `A-JD.1.4` | `Semester 1` | `JD.1.4` | Murid menyampaikan kebutuhan fisiknya secara langsung (seperti haus, lapar, mau ke toilet).
+- `A-JD.1.5` | `Semester 1` | `JD.1.5` | Murid mengenali bahwa dirinya dan temannya memiliki kesukaan atau mainan favorit yang berbeda.
+- `A-JD.1.6` | `Semester 1` | `JD.1.6` | Murid memilih kegiatan bermain yang ingin dilakukannya dari beberapa pilihan yang disediakan.
+- `A-JD.2.1` | `Semester 1` | `JD.2.1` | Murid menceritakan kegiatan atau kebiasaan rutin yang dilakukan di rumahnya bersama keluarga.
+- `A-JD.2.2` | `Semester 1` | `JD.2.2` | Murid mengenali urutan kegiatan harian di sekolah (penyambutan, jurnal pagi, bermain, makan, penutup).
+- `A-JD.2.3` | `Semester 1` | `JD.2.3` | Murid mengikuti pembiasaan baik di sekolah (melepas sepatu, menaruh tas di tempatnya).
+- `A-JD.2.4` | `Semester 2` | `JD.2.4` | Murid mencoba antre dan menunggu giliran saat bermain perosotan atau menggunakan fasilitas sekolah.
+- `A-JD.2.5` | `Semester 2` | `JD.2.5` | Murid membedakan perilaku yang boleh dan tidak boleh dilakukan di dalam kelas.
+- `A-JD.2.6` | `Semester 2` | `JD.2.6` | Murid merapikan kembali mainan ke tempat semula setelah selesai digunakan.
+- `A-JD.3.1` | `Semester 1` | `JD.3.1` | Murid mengenali dan menyebutkan emosi dasar yang sedang dirasakannya (senang, sedih, marah, takut).
+- `A-JD.3.2` | `Semester 1` | `JD.3.2` | Murid mengekspresikan emosi melalui wajah, kata-kata, atau tindakan yang aman bagi dirinya dan orang lain.
+- `A-JD.3.3` | `Semester 1` | `JD.3.3` | Murid mau ditenangkan oleh pendidik saat merasa sedih, kecewa, atau marah.
+- `A-JD.3.4` | `Semester 2` | `JD.3.4` | Murid melakukan kontak mata dan merespon ajakan teman untuk bermain bersama.
+- `A-JD.3.5` | `Semester 2` | `JD.3.5` | Murid mau bergantian menggunakan alat main bersama teman tanpa berebut.
+- `A-JD.3.6` | `Semester 2` | `JD.3.6` | Murid mencoba mengatasi rasa tidak nyaman dengan meminta bantuan pendidik atau menggunakan kata-kata sederhana.
+- `A-JD.4.1` | `Semester 1` | `JD.4.1` | Murid memahami bahwa dirinya adalah anak di rumah dan murid di sekolah.
+- `A-JD.4.2` | `Semester 1` | `JD.4.2` | Murid mengenali dan menjalankan aturan kelas sederhana (seperti berbicara bergantian).
+- `A-JD.4.3` | `Semester 1` | `JD.4.3` | Murid membedakan cara bersikap saat berada di kelas, taman bermain, dan perpustakaan.
+- `A-JD.4.4` | `Semester 1` | `JD.4.4` | Murid mengenali warna bendera negara Indonesia (Merah Putih).
+- `A-JD.4.5` | `Semester 2` | `JD.4.5` | Murid berdiri tertib saat menyanyikan lagu kebangsaan atau penghormatan bendera.
+- `A-JD.4.6` | `Semester 2` | `JD.4.6` | Murid mengenal bahwa ada anak-anak lain di daerah atau tempat yang berbeda melalui gambar/buku cerita.
+- `A-JD.5.1` | `Semester 1` | `JD.5.1` | Murid melakukan gerakan motorik kasar dasar (berjalan di garis lurus, berlari, melompat dengan dua kaki).
+- `A-JD.5.2` | `Semester 1` | `JD.5.2` | Murid menirukan gerakan binatang atau olahraga sederhana untuk melatih keseimbangan tubuh.
+- `A-JD.5.3` | `Semester 1` | `JD.5.3` | Murid meraba dan meremas berbagai tekstur (halus, kasar, basah, kering, pasir, busa) dengan indera peraba.
+- `A-JD.5.4` | `Semester 2` | `JD.5.4` | Murid melakukan gerakan motorik halus dasar (meremas kertas, merobek, meronce manik-manik besar, memegang krayon).
+- `A-JD.5.5` | `Semester 2` | `JD.5.5` | Murid mempraktikkan keterampilan bina diri dasar (memakai kaus kaki, melepas sepatu, makan sendiri).
+- `A-JD.5.6` | `Semester 2` | `JD.5.6` | Murid mengoordinasikan tangan dan mata untuk menggunting garis lurus pendek atau menempel gambar.
+
+#### Elemen 3: Dasar-Dasar Literasi, Matematika, Sains, Teknologi, Rekayasa, dan Seni (LMSTRS) — Kelompok A
+- `A-LMSTRS.1.1` | `Semester 1` | `LMSTRS.1.1` | Murid menyimak dan mendengarkan ketika pendidik membaca buku cerita atau memberikan arahan lisan.
+- `A-LMSTRS.1.2` | `Semester 1` | `LMSTRS.1.2` | Murid melaksanakan instruksi sederhana 1–2 langkah (seperti: "ambil tasmu lalu duduk di karpet").
+- `A-LMSTRS.1.3` | `Semester 1` | `LMSTRS.1.3` | Murid menjawab pertanyaan sederhana tentang pengalaman atau cerita yang baru didengarkan.
+- `A-LMSTRS.1.4` | `Semester 2` | `LMSTRS.1.4` | Murid menunjukkan minat pada buku dengan membalik-balik halaman dan mengamati gambar.
+- `A-LMSTRS.1.5` | `Semester 2` | `LMSTRS.1.5` | Murid menceritakan kembali isi gambar pada buku cerita menggunakan bahasanya sendiri.
+- `A-LMSTRS.1.6` | `Semester 2` | `LMSTRS.1.6` | Murid mencoret bebas, meniru bentuk garis/simbol, atau mencoba meniru tulisan huruf awal namanya.
+- `A-LMSTRS.2.1` | `Semester 1` | `LMSTRS.2.1` | Murid membilang secara berurutan angka 1 sampai 10 (rote counting).
+- `A-LMSTRS.2.2` | `Semester 1` | `LMSTRS.2.2` | Murid menghitung jumlah benda konkret 1 sampai 5 dengan menunjuk satu per satu (korespondensi 1-ke-1).
+- `A-LMSTRS.2.3` | `Semester 1` | `LMSTRS.2.3` | Murid membedakan kelompok benda yang jumlahnya "banyak" dan "sedikit" secara visual.
+- `A-LMSTRS.2.4` | `Semester 2` | `LMSTRS.2.4` | Murid mengenali dan menyebutkan bentuk geometri dasar 2D (lingkaran, segitiga, persegi).
+- `A-LMSTRS.2.5` | `Semester 2` | `LMSTRS.2.5` | Murid membedakan posisi benda sederhana (atas-bawah, dalam-luar, depan-belakang).
+- `A-LMSTRS.2.6` | `Semester 2` | `LMSTRS.2.6` | Murid membandingkan dua benda berdasarkan ukuran (besar-kecil, panjang-pendek) dan mengenal urutan waktu (pagi, siang, malam).
+- `A-LMSTRS.3.1` | `Semester 1` | `LMSTRS.3.1` | Murid mengamati benda, tanaman, atau hewan di sekitar menggunakan inderanya.
+- `A-LMSTRS.3.2` | `Semester 1` | `LMSTRS.3.2` | Murid mengenali hubungan sebab-akibat langsung sederhana (seperti: "kalau air tumpah, meja jadi basah").
+- `A-LMSTRS.3.3` | `Semester 1` | `LMSTRS.3.3` | Murid mengutarakan alasan sederhana mengapa ia memilih suatu mainan atau makanan.
+- `A-LMSTRS.3.4` | `Semester 2` | `LMSTRS.3.4` | Murid mencoba menyelesaikan masalah kecil saat bermain (seperti menumpuk balok agar tidak roboh).
+- `A-LMSTRS.3.5` | `Semester 2` | `LMSTRS.3.5` | Murid menunjukkan rasa ingin tahu dengan bertanya "apa ini?" atau "mengapa begitu?".
+- `A-LMSTRS.3.6` | `Semester 2` | `LMSTRS.3.6` | Murid melakukan pencampuran warna atau percobaan sederhana (terapung-tenggelam) dengan bimbingan.
+- `A-LMSTRS.4.1` | `Semester 1` | `LMSTRS.4.1` | Murid mengenali nama dan fungsi alat/teknologi sederhana sehari-hari (sendok, garpu, gunting tumpul, krayon, sapu).
+- `A-LMSTRS.4.2` | `Semester 1` | `LMSTRS.4.2` | Murid mencoba menggunakan alat sederhana (sendok saat makan, kuas saat melukis) sesuai fungsinya.
+- `A-LMSTRS.4.3` | `Semester 1` | `LMSTRS.4.3` | Murid membawa dan memegang alat sederhana (seperti gunting tumpul) dengan cara yang aman.
+- `A-LMSTRS.4.4` | `Semester 2` | `LMSTRS.4.4` | Murid menyusun atau menggabungkan bahan loose parts / kardus bekas menjadi suatu bentuk kreasi.
+- `A-LMSTRS.4.5` | `Semester 2` | `LMSTRS.4.5` | Murid mengamati tayangan gambar/video edukatif sederhana dengan pendampingan pendidik.
+- `A-LMSTRS.4.6` | `Semester 2` | `LMSTRS.4.6` | Murid mematikan kran air atau merapikan kembali alat yang telah selesai digunakan.
+- `A-LMSTRS.5.1` | `Semester 1` | `LMSTRS.5.1` | Murid mengeksplorasi berbagai media seni visual (krayon, cat jari/finger painting, playdough, bahan alam).
+- `A-LMSTRS.5.2` | `Semester 1` | `LMSTRS.5.2` | Murid mendengarkan musik, menyanyikan lagu anak-anak sederhana, dan menepuk irama.
+- `A-LMSTRS.5.3` | `Semester 1` | `LMSTRS.5.3` | Murid menggerakkan tubuh mengikuti irama musik atau menirukan gerakan tarian sederhana.
+- `A-LMSTRS.5.4` | `Semester 2` | `LMSTRS.5.4` | Murid mengekspresikan gagasannya melalui gambar coretan, bentuk cetakan, atau bangunan balok.
+- `A-LMSTRS.5.5` | `Semester 2` | `LMSTRS.5.5` | Murid bermain peran sederhana (seperti berpura-pura menjadi dokter, koki, atau penjual).
+- `A-LMSTRS.5.6` | `Semester 2` | `LMSTRS.5.6` | Murid menunjukkan rasa senang dan memberikan tepuk tangan/pujian atas hasil karya dirinya dan teman.
+
+---
+
+### BAGIAN B: KELOMPOK B (USIA 5–6 TAHUN) — 84 INDIKATOR
+
+#### Elemen 1: Nilai Agama dan Budi Pekerti (NABP) — Kelompok B
+- `B-NABP.1.1` | `Semester 1 & 2` | `NABP.1.1` | Murid mengenal nama Tuhan YME sebagai pencipta dirinya, makhluk hidup lain, dan alam semesta.
+- `B-NABP.1.2` | `Semester 1 & 2` | `NABP.1.2` | Murid mengenal nama agama, hari besar keagamaan, dan tempat ibadah sesuai agama/kepercayaannya.
+- `B-NABP.1.3` | `Semester 1 & 2` | `NABP.1.3` | Murid membedakan simbol, atribut, dan kitab suci yang berkaitan dengan agama yang dianutnya.
+- `B-NABP.1.4` | `Semester 1 & 2` | `NABP.1.4` | Murid meniru ucapan doa harian dan gerakan ibadah dengan bimbingan pendidik (scaffolding).
+- `B-NABP.1.5` | `Semester 1 & 2` | `NABP.1.5` | Murid mempraktikkan kegiatan ibadah harian dan doa sebelum/sesudah berkegiatan secara mandiri.
+- `B-NABP.1.6` | `Semester 1 & 2` | `NABP.1.6` | Murid menerapkan nilai-nilai ajaran agama dalam interaksi dan perilaku bermain sehari-hari.
+- `B-NABP.2.1` | `Semester 1` | `NABP.2.1` | Murid mengenali kondisi tubuhnya saat bersih dan kotor serta memahami pentingnya bina diri.
+- `B-NABP.2.2` | `Semester 1` | `NABP.2.2` | Murid menerapkan kebiasaan hidup bersih (cuci tangan, sikat gigi, toilet training) secara mandiri.
+- `B-NABP.2.3` | `Semester 1` | `NABP.2.3` | Murid mengenali ciri-ciri tubuh sehat dan memilih makanan/minuman bergizi seimbang.
+- `B-NABP.2.4` | `Semester 1` | `NABP.2.4` | Murid menerapkan kebiasaan merawat kesehatan tubuh, olahraga, dan istirahat yang cukup.
+- `B-NABP.2.5` | `Semester 2` | `NABP.2.5` | Murid mengidentifikasi benda, situasi, dan perilaku yang membahayakan keselamatan dirinya.
+- `B-NABP.2.6` | `Semester 2` | `NABP.2.6` | Murid menerapkan tindakan pencegahan bahaya keselamatan diri dan merefleksikan rasa syukur atas karunia tubuh dari Tuhan YME.
+- `B-NABP.3.1` | `Semester 1` | `NABP.3.1` | Murid mengenali persamaan dan perbedaan ciri fisik maupun non-fisik antara dirinya dengan orang lain.
+- `B-NABP.3.2` | `Semester 1` | `NABP.3.2` | Murid menunjukkan sikap menerima dan menghormati keberagaman sesama manusia tanpa membeda-bedakan.
+- `B-NABP.3.3` | `Semester 1` | `NABP.3.3` | Murid mengenali dan meniru penggunaan kata-kata santun (maaf, tolong, terima kasih, permisi).
+- `B-NABP.3.4` | `Semester 2` | `NABP.3.4` | Murid terbiasa bertutur kata halus, bersikap jujur, dan mendengarkan pendapat teman yang berbeda.
+- `B-NABP.3.5` | `Semester 2` | `NABP.3.5` | Murid menunjukkan sikap empati (bela rasa) dengan membantu teman yang membutuhkan bantuan.
+- `B-NABP.3.6` | `Semester 2` | `NABP.3.6` | Murid merefleksikan pentingnya berperilaku baik dan berakhlak mulia untuk menciptakan keharmonisan.
+- `B-NABP.4.1` | `Semester 1` | `NABP.4.1` | Murid mengenal konsep alam sekitar, tanaman, dan hewan sebagai makhluk hidup ciptaan Tuhan YME.
+- `B-NABP.4.2` | `Semester 2` | `NABP.4.2` | Murid menjelaskan cara merawat tanaman dan menyayangi hewan di lingkungan sekitarnya.
+- `B-NABP.4.3` | `Semester 2` | `NABP.4.3` | Murid mempraktikkan kegiatan menyiram tanaman dan memberi makan hewan secara teratur.
+- `B-NABP.4.4` | `Semester 1` | `NABP.4.4` | Murid mempraktikkan kebiasaan membuang sampah pada tempatnya dan memelihara kebersihan lingkungan.
+- `B-NABP.4.5` | `Semester 2` | `NABP.4.5` | Murid mengamati dampak dari kerusakan lingkungan alam dan cara sederhana untuk mencegahnya.
+- `B-NABP.4.6` | `Semester 2` | `NABP.4.6` | Murid merefleksikan pentingnya merawat seluruh makhluk hidup dan menjaga kelestarian alam ciptaan Tuhan YME.
+
+#### Elemen 2: Jati Diri (JD) — Kelompok B
+- `B-JD.1.1` | `Semester 1` | `JD.1.1` | Murid menyebutkan identitas diri dasar (nama lengkap, nama panggilan, usia, gender, ciri fisik).
+- `B-JD.1.2` | `Semester 1` | `JD.1.2` | Murid menceritakan asal-usul keluarga, latar belakang agama, dan sosial budaya daerahnya secara sederhana.
+- `B-JD.1.3` | `Semester 1` | `JD.1.3` | Murid mengidentifikasi minat, kesukaan, dan hobi yang dimilikinya saat berkegiatan.
+- `B-JD.1.4` | `Semester 1` | `JD.1.4` | Murid mengomunikasikan kebutuhan pribadi baik fisik maupun emosionalnya secara jelas.
+- `B-JD.1.5` | `Semester 1` | `JD.1.5` | Murid menghubungkan keunikan identitas dan minat dirinya dengan keberagaman teman di kelas.
+- `B-JD.1.6` | `Semester 1` | `JD.1.6` | Murid merefleksikan minat dan kebutuhannya untuk memilih serta mengambil keputusan sederhana.
+- `B-JD.2.1` | `Semester 1` | `JD.2.1` | Murid menjelaskan rutinitas harian dan pembiasaan positif di lingkungan rumah/keluarganya.
+- `B-JD.2.2` | `Semester 1` | `JD.2.2` | Murid mengenali dan mengikuti tata tertib serta pembiasaan harian di satuan PAUD.
+- `B-JD.2.3` | `Semester 1` | `JD.2.3` | Murid membedakan kebiasaan yang berlaku di lingkungan keluarga, sekolah, dan masyarakat.
+- `B-JD.2.4` | `Semester 2` | `JD.2.4` | Murid menerapkan kebiasaan sopan santun dan budaya antre/bergiliran dalam berkegiatan.
+- `B-JD.2.5` | `Semester 2` | `JD.2.5` | Murid menghubungkan kebiasaan baik di keluarga/sekolah dengan nilai-nilai kebaikan di masyarakat.
+- `B-JD.2.6` | `Semester 2` | `JD.2.6` | Murid merefleksikan pentingnya menjaga kebiasaan positif di berbagai lingkungan untuk kebaikan bersama.
+- `B-JD.3.1` | `Semester 1` | `JD.3.1` | Murid mengenali dan membedakan ragam emosi dasar (senang, sedih, marah, takut, gelisah).
+- `B-JD.3.2` | `Semester 1` | `JD.3.2` | Murid mengekspresikan emosi secara wajar dan menceritakan penyebab emosi yang dirasakannya.
+- `B-JD.3.3` | `Semester 1` | `JD.3.3` | Murid memilih dan menerapkan strategi regulasi emosi sederhana (tarik napas, menenangkan diri).
+- `B-JD.3.4` | `Semester 2` | `JD.3.4` | Murid melakukan interaksi sosial positif dengan teman dan pendidik saat bermain bersama.
+- `B-JD.3.5` | `Semester 2` | `JD.3.5` | Murid terbiasa berbagi, bergiliran, dan menyelesaikan konflik ringan dengan kata-kata yang baik.
+- `B-JD.3.6` | `Semester 2` | `JD.3.6` | Murid berkolaborasi dalam tugas kelompok serta merefleksikan pentingnya hubungan sosial yang sehat.
+- `B-JD.4.1` | `Semester 1` | `JD.4.1` | Murid memahami perannya sebagai anak di rumah serta sebagai murid dan teman di sekolah.
+- `B-JD.4.2` | `Semester 1` | `JD.4.2` | Murid mengenali, menyepakati, dan mematuhi aturan/kesepakatan kelas yang dibuat bersama.
+- `B-JD.4.3` | `Semester 1` | `JD.4.3` | Murid membedakan norma dan tata krama yang berlaku di berbagai tempat berbeda.
+- `B-JD.4.4` | `Semester 1` | `JD.4.4` | Murid mengenal simbol-simbol kebangsaan Indonesia (Bendera Merah Putih, Garuda Pancasila, Lagu Indonesia Raya).
+- `B-JD.4.5` | `Semester 2` | `JD.4.5` | Murid mengenal keberadaan negara lain, budaya, dan bahasa yang berbeda di dunia.
+- `B-JD.4.6` | `Semester 2` | `JD.4.6` | Murid merefleksikan kesadaran bahwa dirinya merupakan bagian dari warga negara Indonesia dan warga dunia.
+- `B-JD.5.1` | `Semester 1` | `JD.5.1` | Murid melakukan gerakan motorik kasar dasar (berlari, melompat, melempar, memanjat) dengan lancar.
+- `B-JD.5.2` | `Semester 1` | `JD.5.2` | Murid mengontrol gerakan tubuh yang melibatkan kekuatan, keseimbangan, dan koordinasi fisik.
+- `B-JD.5.3` | `Semester 1` | `JD.5.3` | Murid mengeksplorasi ragam tekstur (halus, kasar, basah, kering, lengket) melalui indera perabaan (taktil).
+- `B-JD.5.4` | `Semester 2` | `JD.5.4` | Murid melakukan gerakan motorik halus presisi (menggunting, meronce, melipat, memegang alat tulis).
+- `B-JD.5.5` | `Semester 2` | `JD.5.5` | Murid mempraktikkan keterampilan bina diri mandiri (memakai sepatu, mengancingkan baju, merapikan alat main).
+- `B-JD.5.6` | `Semester 2` | `JD.5.6` | Murid mengoordinasikan fungsi gerak tubuh secara optimal untuk mendukung kemandirian berkegiatan.
+
+#### Elemen 3: Dasar-Dasar Literasi, Matematika, Sains, Teknologi, Rekayasa, dan Seni (LMSTRS) — Kelompok B
+- `B-LMSTRS.1.1` | `Semester 1` | `LMSTRS.1.1` | Murid mengenali dan menyimak informasi lisan serta melaksanakan instruksi majemuk (2–3 langkah).
+- `B-LMSTRS.1.2` | `Semester 1` | `LMSTRS.1.2` | Murid mengomunikasikan perasaan, pikiran, dan pengalamannya secara lisan menggunakan kalimat terstruktur.
+- `B-LMSTRS.1.3` | `Semester 1` | `LMSTRS.1.3` | Murid merespon dan membangun percakapan dua arah secara aktif, santun, dan bergantian.
+- `B-LMSTRS.1.4` | `Semester 2` | `LMSTRS.1.4` | Murid menunjukkan minat dan partisipasi aktif dalam kegiatan membaca nyaring (read aloud) dan mengeksplorasi buku.
+- `B-LMSTRS.1.5` | `Semester 2` | `LMSTRS.1.5` | Murid memahami makna simbol/cetakan dan mengidentifikasi bunyi huruf awal kata (kesadaran fonemik).
+- `B-LMSTRS.1.6` | `Semester 2` | `LMSTRS.1.6` | Murid menunjukkan kemampuan pramenulis melalui coretan bermakna, meniru bentuk huruf, dan menulis nama diri.
+- `B-LMSTRS.2.1` | `Semester 1` | `LMSTRS.2.1` | Murid membilang berurutan (1–20) dan menunjukkan kepekaan bilangan (korespondensi satu-satu & subitasi).
+- `B-LMSTRS.2.2` | `Semester 1 & 2` | `LMSTRS.2.2` | Murid memahami konsep penggabungan (penjumlahan) dan pemisahan (pengurangan) benda konkret.
+- `B-LMSTRS.2.3` | `Semester 1` | `LMSTRS.2.3` | Murid mengidentifikasi, melanjutkan, dan menciptakan pola berulang sederhana (A-B-A-B atau A-B-C).
+- `B-LMSTRS.2.4` | `Semester 2` | `LMSTRS.2.4` | Murid mengenali dan membedakan bentuk geometri 2D (lingkaran, segitiga, persegi) dan 3D (kubus, bola, tabung).
+- `B-LMSTRS.2.5` | `Semester 2` | `LMSTRS.2.5` | Murid mengidentifikasi konsep posisi/spasial (atas, bawah, dalam, luar, depan, belakang) dan arah.
+- `B-LMSTRS.2.6` | `Semester 2` | `LMSTRS.2.6` | Murid mengukur benda dengan satuan tidak baku (jengkal, balok) serta mengenali konsep waktu (pagi/siang/malam, hari).
+- `B-LMSTRS.3.1` | `Semester 1` | `LMSTRS.3.1` | Murid mengamati fenomena alam dan sosial di sekitarnya serta menyebutkan ciri-cirinya.
+- `B-LMSTRS.3.2` | `Semester 1` | `LMSTRS.3.2` | Murid memahami dan menjelaskan hubungan sebab-akibat sederhana dari suatu kondisi/peristiwa.
+- `B-LMSTRS.3.3` | `Semester 1` | `LMSTRS.3.3` | Murid menyampaikan alasan logis di balik pilihan, keputusan, atau tindakan yang diambilnya.
+- `B-LMSTRS.3.4` | `Semester 2` | `LMSTRS.3.4` | Murid menemukan alternatif solusi untuk memecahkan masalah sederhana saat bermain.
+- `B-LMSTRS.3.5` | `Semester 2` | `LMSTRS.3.5` | Murid menunjukkan rasa ingin tahu tinggi dengan aktif mengajukan pertanyaan tentang hal baru.
+- `B-LMSTRS.3.6` | `Semester 2` | `LMSTRS.3.6` | Murid terlibat aktif dalam eksplorasi dan eksperimen sains sederhana (campur warna, terapung-tenggelam).
+- `B-LMSTRS.4.1` | `Semester 1` | `LMSTRS.4.1` | Murid memahami fungsi alat/teknologi sederhana harian (gunting, sendok, sapu, kuas, krayon).
+- `B-LMSTRS.4.2` | `Semester 1` | `LMSTRS.4.2` | Murid menggunakan teknologi sederhana dalam kehidupan harian secara aman dan bertanggung jawab.
+- `B-LMSTRS.4.3` | `Semester 1` | `LMSTRS.4.3` | Murid menggunakan dan memodifikasi alat/bahan di sekitar untuk menyelesaikan masalah praktis.
+- `B-LMSTRS.4.4` | `Semester 2` | `LMSTRS.4.4` | Murid merancang dan merekayasa karya dari bahan bekas/loose parts secara kreatif.
+- `B-LMSTRS.4.5` | `Semester 2` | `LMSTRS.4.5` | Murid memanfaatkan media teknologi/digital (dengan pendampingan) untuk mencari informasi positif.
+- `B-LMSTRS.4.6` | `Semester 2` | `LMSTRS.4.6` | Murid merefleksikan pentingnya penggunaan teknologi secara bijak dan merawat alat setelah digunakan.
+- `B-LMSTRS.5.1` | `Semester 1` | `LMSTRS.5.1` | Murid mengeksplorasi berbagai media dan alat seni (cat air, krayon, bahan alam, alat musik buatan).
+- `B-LMSTRS.5.2` | `Semester 1` | `LMSTRS.5.2` | Murid mengeksplorasi ragam proses seni (seni rupa, musik, olah vokal, gerak tari, dan drama/peran).
+- `B-LMSTRS.5.3` | `Semester 1` | `LMSTRS.5.3` | Murid mengekspresikan imajinasi, ide, dan perasaannya secara bebas melalui karya seni visual.
+- `B-LMSTRS.5.4` | `Semester 2` | `LMSTRS.5.4` | Murid mengekspresikan diri melalui olah tubuh/gerakan tari dan memainkan irama musik sederhana.
+- `B-LMSTRS.5.5` | `Semester 2` | `LMSTRS.5.5` | Murid membuat karya seni orisinal hasil kreasi sendiri dari gabungan berbagai media.
+- `B-LMSTRS.5.6` | `Semester 2` | `LMSTRS.5.6` | Murid memberikan respon positif dan mengapresiasi hasil karya seni milik sendiri maupun teman sebayanya.
+
+---
+
+## 5. ATURAN TEKNIS OUTPUT
+- Pastikan semua request POST ke Google Apps Script memakai `Content-Type: text/plain;charset=utf-8` (anti-CORS GitHub Pages).
+- Pastikan validasi batas 3 foto hasil karya/anak/bulan berjalan di **Frontend maupun Backend GAS** (double validation).
+- Jangan gunakan placeholder atau memotong daftar 168 baris `Master_ATP` saat menuliskan skrip `Setup.gs`.

@@ -3,18 +3,16 @@ import { createApiApp } from './app';
 
 const app = createApiApp();
 
-export default function handler(req: IncomingMessage, res: ServerResponse) {
-  const urlStr = req.url || '/';
-  const qIdx = urlStr.indexOf('?');
-  if (qIdx !== -1) {
-    const params = new URLSearchParams(urlStr.slice(qIdx + 1));
-    const pathParam = params.get('__path');
-    if (pathParam !== null) {
-      params.delete('__path');
-      const remainingQs = params.toString();
-      const cleanPath = pathParam.replace(/^\/+/, '');
-      req.url = `/api/${cleanPath}${remainingQs ? `?${remainingQs}` : ''}`;
+export function createVercelHandler(fixedPath?: string) {
+  return function handler(req: IncomingMessage, res: ServerResponse) {
+    if (fixedPath) {
+      const rawUrl = req.url || '/';
+      const qIdx = rawUrl.indexOf('?');
+      const qs = qIdx !== -1 ? rawUrl.slice(qIdx) : '';
+      req.url = `${fixedPath}${qs}`;
     }
-  }
-  return app(req as any, res as any);
+    return app(req as any, res as any);
+  };
 }
+
+export default createVercelHandler();

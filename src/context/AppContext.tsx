@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { KelasType, PengaturanSekolah, SchoolDatabase, User, UserRole } from '../types';
 import { createInitialSeedDatabase } from '../data/seedDatabase';
+import { purgeStudentsFromDatabase } from '../utils/studentCleanup';
 
 export type SessionUser = Omit<User, 'password_hash' | 'password'>;
 
@@ -57,7 +58,11 @@ interface AppContextValue {
   deleteSiswaWithCleanup: (siswaId: string) => Promise<void>;
   logout: () => Promise<void>;
   changePassword: (lama: string, baru: string) => Promise<{ ok: boolean; error?: string }>;
-  updateDb: (updater: (prev: SchoolDatabase) => SchoolDatabase, toastText?: string) => Promise<void>;
+  updateDb: (
+    updater: (prev: SchoolDatabase) => SchoolDatabase,
+    toastText?: string,
+    options?: { graduatedSiswaIds?: string[] }
+  ) => Promise<void>;
   addToast: (text: string, type?: 'success' | 'error' | 'info') => void;
   dismissToast: (id: number) => void;
   resetDemoDatabase: () => Promise<void>;
@@ -371,7 +376,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   );
 
   const updateDb = useCallback(
-    async (updater: (prev: SchoolDatabase) => SchoolDatabase, toastText?: string) => {
+    async (
+      updater: (prev: SchoolDatabase) => SchoolDatabase,
+      toastText?: string,
+      options?: { graduatedSiswaIds?: string[] }
+    ) => {
       const finalDb = updater(dbRef.current);
       dbRef.current = finalDb;
       setDb(finalDb);
@@ -380,13 +389,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!token) return;
       setSaving(true);
       try {
+        const payload =
+          options?.graduatedSiswaIds && options.graduatedSiswaIds.length > 0
+            ? { ...finalDb, graduatedSiswaIds: options.graduatedSiswaIds }
+            : finalDb;
         const res = await fetch('/api/db', {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify(finalDb),
+          body: JSON.stringify(payload),
         });
         const json = await res.json();
         if (!res.ok || !json.ok) {
@@ -408,25 +421,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     async (siswaId: string) => {
       const target = dbRef.current.siswa.find((s) => s.siswa_id === siswaId);
       const label = target ? `Data murid ${target.nama_anak} dan seluruh catatannya dihapus.` : 'Data murid dihapus.';
-      await updateDb(
-        (prev) => ({
-          ...prev,
-          siswa: prev.siswa.filter((s) => s.siswa_id !== siswaId),
-          riwayatKelas: prev.riwayatKelas.filter((r) => r.siswa_id !== siswaId),
-          antropometri: prev.antropometri.filter((a) => a.siswa_id !== siswaId),
-          literasi: prev.literasi.filter((l) => l.siswa_id !== siswaId),
-          keagamaan: prev.keagamaan.filter((k) => k.siswa_id !== siswaId),
-          kaihHarian: prev.kaihHarian.filter((k) => k.siswa_id !== siswaId),
-          kaihFotoBulanan: prev.kaihFotoBulanan.filter((f) => f.siswa_id !== siswaId),
-          ulasanOrtu: prev.ulasanOrtu.filter((u) => u.siswa_id !== siswaId),
-          logMateriHarian: prev.logMateriHarian.filter((l) => l.id_siswa !== siswaId),
-          daftarHadir: prev.daftarHadir.filter((d) => d.siswa_id !== siswaId),
-          asesmenAnekdot: prev.asesmenAnekdot.filter((a) => a.siswa_id !== siswaId),
-          asesmenHasilKarya: prev.asesmenHasilKarya.filter((k) => k.siswa_id !== siswaId),
-          asesmenCeklis: prev.asesmenCeklis.filter((c) => c.siswa_id !== siswaId),
-        }),
-        label
-      );
+      await updateDb((prev) => purgeStudentsFromDatabase(prev, [siswaId]), label);
     },
     [updateDb]
   );

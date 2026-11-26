@@ -617,8 +617,10 @@ function prosesKenaikanKelasOtomatis() {
     kelasList = [{ nama_kelas: 'Kelas A' }, { nama_kelas: 'Kelas B' }];
   }
   var naik = 0, lulus = 0, tinggal = 0;
+  var graduatedMap = {};
   for (var i = 1; i < sRows.length; i++) {
     if (sRows[i][7] !== 'Aktif') continue;
+    var sid = String(sRows[i][0] || '');
     var keputusan = String(sRows[i][10] || 'BELUM_DITENTUKAN');
     if (keputusan === 'TINGGAL_KELAS') {
       tinggal++;
@@ -629,17 +631,41 @@ function prosesKenaikanKelasOtomatis() {
     for (var j = 0; j < kelasList.length; j++) {
       if (String(kelasList[j].nama_kelas) === curClass) { idx = j; break; }
     }
-    if (idx >= 0 && idx < kelasList.length - 1) {
+    if (keputusan !== 'LULUS_KE_SD' && idx >= 0 && idx < kelasList.length - 1) {
       sSheet.getRange(i + 1, 7).setValue(kelasList[idx + 1].nama_kelas);
       if (sRows[i].length >= 11) sSheet.getRange(i + 1, 11).setValue('BELUM_DITENTUKAN');
       naik++;
-    } else if (idx === kelasList.length - 1 || curClass === 'Kelas B') {
-      sSheet.getRange(i + 1, 7, 1, 2).setValues([['Lulus', 'Lulus']]);
-      if (sRows[i].length >= 11) sSheet.getRange(i + 1, 11).setValue('LULUS_KE_SD');
+    } else if (keputusan === 'LULUS_KE_SD' || idx === kelasList.length - 1 || curClass === 'Kelas B') {
+      if (sid) graduatedMap[sid] = true;
       lulus++;
     }
   }
-  return { naik: naik, lulus: lulus, tinggal: tinggal };
+  var purgeSheets = [
+    'Siswa', 'RiwayatKelas', 'Antropometri', 'Literasi', 'Keagamaan',
+    'KAIH_Harian', 'KAIH_Foto_Bulanan', 'UlasanOrtu', 'Log_Materi_Harian',
+    'DaftarHadir', 'Asesmen_Anekdot', 'Asesmen_HasilKarya', 'Asesmen_Ceklis'
+  ];
+  if (Object.keys(graduatedMap).length > 0) {
+    for (var p = 0; p < purgeSheets.length; p++) {
+      var sh = ss.getSheetByName(purgeSheets[p]);
+      if (!sh || sh.getLastRow() < 2) continue;
+      var vals = sh.getDataRange().getValues();
+      var hdr = vals[0];
+      var idCol = hdr.indexOf('siswa_id');
+      if (idCol < 0) idCol = hdr.indexOf('id_siswa');
+      if (idCol < 0) continue;
+      var kept = [hdr];
+      for (var r = 1; r < vals.length; r++) {
+        var rowSid = String(vals[r][idCol] || '');
+        if (!graduatedMap[rowSid]) kept.push(vals[r]);
+      }
+      if (kept.length !== vals.length) {
+        sh.clearContents();
+        sh.getRange(1, 1, kept.length, hdr.length).setValues(kept);
+      }
+    }
+  }
+  return { naik: naik, lulus: lulus, tinggal: tinggal, purged: Object.keys(graduatedMap).length };
 }
 
 function exportAllSheetsJson_() {

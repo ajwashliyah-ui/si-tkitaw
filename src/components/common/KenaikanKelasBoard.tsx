@@ -19,6 +19,7 @@ import {
   getNextClassTarget,
   isPromoteDecision,
 } from '../../utils/kelas';
+import { purgeStudentsFromDatabase } from '../../utils/studentCleanup';
 
 interface KenaikanKelasBoardProps {
   mode: 'admin' | 'guru';
@@ -254,6 +255,19 @@ export const KenaikanKelasBoard: React.FC<KenaikanKelasBoardProps> = ({
     }
 
     const dest = targetColumn;
+    if (dest === 'Lulus') {
+      const graduatedIds = siswaList.map((s) => s.siswa_id);
+      await updateDb(
+        (prev) => purgeStudentsFromDatabase(prev, graduatedIds),
+        `${siswaList.length} murid dikonfirmasi Lulus ke SD dan seluruh datanya otomatis dihapus agar tidak menumpuk.`,
+        { graduatedSiswaIds: graduatedIds }
+      );
+      triggerCelebration('Lulus ke SD & data dibersihkan!');
+      setPendingTransfer(null);
+      setSelectedIds([]);
+      return;
+    }
+
     await updateDb(
       (prev) => {
         const waliMap = new Map(
@@ -265,13 +279,6 @@ export const KenaikanKelasBoard: React.FC<KenaikanKelasBoardProps> = ({
         const newHistoryRows: RiwayatKelas[] = [];
         const updatedRiwayat = prev.riwayatKelas.map((r) => {
           if (ids.has(r.siswa_id) && r.ta_id === activeTa?.ta_id && r.status_akhir === 'Berjalan') {
-            if (dest === 'Lulus') {
-              return {
-                ...r,
-                status_akhir: 'Lulus' as const,
-                catatan: noteTrim || 'Lulus · Melanjutkan ke SD',
-              };
-            }
             if (r.kelas !== dest) {
               return {
                 ...r,
@@ -285,16 +292,6 @@ export const KenaikanKelasBoard: React.FC<KenaikanKelasBoardProps> = ({
 
         const nextSiswa = prev.siswa.map((s) => {
           if (!ids.has(s.siswa_id)) return s;
-          if (dest === 'Lulus') {
-            return {
-              ...s,
-              kelas_aktif: 'Lulus' as const,
-              status_siswa: 'Lulus' as const,
-              keputusan_kenaikan: 'LULUS_KE_SD' as const,
-              catatan_kenaikan: noteTrim || s.catatan_kenaikan || 'Melanjutkan ke SD',
-              keputusan_diatur_oleh: actorLabel,
-            };
-          }
           if (activeTa && s.kelas_aktif !== dest) {
             newHistoryRows.push({
               riwayat_id: `RWY-${Date.now()}-${s.siswa_id}`,
@@ -323,12 +320,10 @@ export const KenaikanKelasBoard: React.FC<KenaikanKelasBoardProps> = ({
           riwayatKelas: [...updatedRiwayat, ...newHistoryRows],
         };
       },
-      dest === 'Lulus'
-        ? `${siswaList.length} murid dikonfirmasi Lulus (melanjutkan ke SD).`
-        : `${siswaList.length} murid dipindahkan ke ${dest}.`
+      `${siswaList.length} murid dipindahkan ke ${dest}.`
     );
 
-    triggerCelebration(dest === 'Lulus' ? 'Lulus ke SD!' : `Pindah ke ${dest}!`);
+    triggerCelebration(`Pindah ke ${dest}!`);
     setPendingTransfer(null);
     setSelectedIds([]);
   };
@@ -363,84 +358,85 @@ export const KenaikanKelasBoard: React.FC<KenaikanKelasBoardProps> = ({
 
   const handleApplyConfirmedDecisions = async () => {
     const naikMap = new Map(confirmedBreakdown.naikList.map((n) => [n.siswa.siswa_id, n.nextClass]));
-    const lulusSet = new Set(confirmedBreakdown.lulusList.map((s) => s.siswa_id));
+    const graduatedIds = confirmedBreakdown.lulusList.map((s) => s.siswa_id);
+    const lulusSet = new Set(graduatedIds);
     const tinggalSet = new Set(confirmedBreakdown.tinggalList.map((s) => s.siswa_id));
 
     if (naikMap.size + lulusSet.size + tinggalSet.size === 0) return;
 
-    await updateDb((prev) => {
-      const waliMap = new Map(
-        prev.users
-          .filter((u) => u.role === 'Guru' && u.kelas_ampu)
-          .map((u) => [u.kelas_ampu as string, u.user_id])
-      );
-      const newRows: RiwayatKelas[] = [];
+    const toastMessage =
+      lulusSet.size > 0
+        ? `${naikMap.size} naik kelas, ${lulusSet.size} lulus ke SD (data otomatis dihapus), ${tinggalSet.size} tinggal kelas.`
+        : `${naikMap.size} naik kelas, ${tinggalSet.size} tinggal kelas.`;
 
-      const updatedRiwayat = prev.riwayatKelas.map((r) => {
-        if (r.ta_id === activeTa?.ta_id && r.status_akhir === 'Berjalan') {
-          const nextCls = naikMap.get(r.siswa_id);
+    await updateDb(
+      (prev) => {
+        const waliMap = new Map(
+          prev.users
+            .filter((u) => u.role === 'Guru' && u.kelas_ampu)
+            .map((u) => [u.kelas_ampu as string, u.user_id])
+        );
+        const newRows: RiwayatKelas[] = [];
+
+        const updatedRiwayat = prev.riwayatKelas.map((r) => {
+          if (r.ta_id === activeTa?.ta_id && r.status_akhir === 'Berjalan') {
+            const nextCls = naikMap.get(r.siswa_id);
+            if (nextCls) {
+              return { ...r, status_akhir: 'Naik Kelas' as const, catatan: `Naik ke ${nextCls}` };
+            }
+            if (tinggalSet.has(r.siswa_id)) {
+              return { ...r, status_akhir: 'Tinggal Kelas' as const, catatan: `Tinggal di ${r.kelas}` };
+            }
+          }
+          return r;
+        });
+
+        const nextSiswa = prev.siswa.map((s) => {
+          const nextCls = naikMap.get(s.siswa_id);
           if (nextCls) {
-            return { ...r, status_akhir: 'Naik Kelas' as const, catatan: `Naik ke ${nextCls}` };
+            if (activeTa) {
+              newRows.push({
+                riwayat_id: `RWY-${Date.now()}-${s.siswa_id}`,
+                siswa_id: s.siswa_id,
+                ta_id: activeTa.ta_id,
+                nama_ta: activeTa.nama_ta,
+                kelas: nextCls,
+                wali_kelas_id: waliMap.get(nextCls) || '',
+                status_akhir: 'Berjalan',
+                catatan: s.catatan_kenaikan || `Naik dari ${s.kelas_aktif}`,
+              });
+            }
+            return {
+              ...s,
+              kelas_aktif: nextCls,
+              keputusan_kenaikan: 'BELUM_DITENTUKAN' as const,
+              keputusan_diatur_oleh: actorLabel,
+            };
           }
-          if (lulusSet.has(r.siswa_id)) {
-            return { ...r, status_akhir: 'Lulus' as const, catatan: 'Lulus · Melanjutkan ke SD' };
+          if (tinggalSet.has(s.siswa_id)) {
+            return {
+              ...s,
+              keputusan_kenaikan: 'TINGGAL_KELAS' as const,
+              keputusan_diatur_oleh: actorLabel,
+            };
           }
-          if (tinggalSet.has(r.siswa_id)) {
-            return { ...r, status_akhir: 'Tinggal Kelas' as const, catatan: `Tinggal di ${r.kelas}` };
-          }
-        }
-        return r;
-      });
+          return s;
+        });
 
-      const nextSiswa = prev.siswa.map((s) => {
-        const nextCls = naikMap.get(s.siswa_id);
-        if (nextCls) {
-          if (activeTa) {
-            newRows.push({
-              riwayat_id: `RWY-${Date.now()}-${s.siswa_id}`,
-              siswa_id: s.siswa_id,
-              ta_id: activeTa.ta_id,
-              nama_ta: activeTa.nama_ta,
-              kelas: nextCls,
-              wali_kelas_id: waliMap.get(nextCls) || '',
-              status_akhir: 'Berjalan',
-              catatan: s.catatan_kenaikan || `Naik dari ${s.kelas_aktif}`,
-            });
-          }
-          return {
-            ...s,
-            kelas_aktif: nextCls,
-            keputusan_kenaikan: 'BELUM_DITENTUKAN' as const,
-            keputusan_diatur_oleh: actorLabel,
-          };
-        }
-        if (lulusSet.has(s.siswa_id)) {
-          return {
-            ...s,
-            kelas_aktif: 'Lulus' as const,
-            status_siswa: 'Lulus' as const,
-            keputusan_kenaikan: 'LULUS_KE_SD' as const,
-            keputusan_diatur_oleh: actorLabel,
-          };
-        }
-        if (tinggalSet.has(s.siswa_id)) {
-          return {
-            ...s,
-            keputusan_kenaikan: 'TINGGAL_KELAS' as const,
-            keputusan_diatur_oleh: actorLabel,
-          };
-        }
-        return s;
-      });
+        const nextDb = {
+          ...prev,
+          siswa: nextSiswa,
+          riwayatKelas: [...updatedRiwayat, ...newRows],
+        };
+        return graduatedIds.length > 0 ? purgeStudentsFromDatabase(nextDb, graduatedIds) : nextDb;
+      },
+      toastMessage,
+      graduatedIds.length > 0 ? { graduatedSiswaIds: graduatedIds } : undefined
+    );
 
-      return {
-        ...prev,
-        siswa: nextSiswa,
-        riwayatKelas: [...updatedRiwayat, ...newRows],
-      };
-    }, `${naikMap.size} naik kelas, ${lulusSet.size} lulus ke SD, ${tinggalSet.size} tinggal kelas.`);
-
-    triggerCelebration('Status kenaikan diterapkan!');
+    triggerCelebration(
+      lulusSet.size > 0 ? 'Status diterapkan & data lulus dibersihkan!' : 'Status kenaikan diterapkan!'
+    );
     setConfirmApplyModal(false);
   };
 
@@ -830,7 +826,7 @@ export const KenaikanKelasBoard: React.FC<KenaikanKelasBoardProps> = ({
             {renderColumn(
               'Lulus',
               'Lulus (Lanjut ke SD)',
-              'Alumni yang sudah melanjutkan ke SD (bisa dikembalikan jika batal)',
+              'Seret ke sini untuk konfirmasi lulus (data murid otomatis dihapus agar tidak menumpuk)',
               'bg-[#d97706]',
               kelasList.length
             )}
@@ -1040,6 +1036,15 @@ export const KenaikanKelasBoard: React.FC<KenaikanKelasBoardProps> = ({
                 : `Murid akan dipindahkan ke ${pendingTransfer.targetColumn} dan statusnya diaktifkan kembali jika sebelumnya sudah Lulus.`}
             </p>
 
+            {pendingTransfer.targetColumn === 'Lulus' && (
+              <div className="p-3 rounded-xl bg-[#f8dcd6]/70 border border-[#e3a396] text-xs text-[#7a2515] leading-relaxed">
+                <strong>Pembersihan otomatis:</strong> Setelah dikonfirmasi Lulus ke SD, seluruh data
+                murid tersebut (profil, nilai, absensi, 7 KAIH, hasil karya, dan riwayat) akan{' '}
+                <strong>otomatis dihapus permanen</strong> dari aplikasi dan Google Sheets agar tidak
+                menjadi sampah data.
+              </div>
+            )}
+
             <div>
               <label htmlFor="catatan-pindah" className="block text-xs font-bold text-[#55665a] mb-1">
                 Catatan (opsional, mis. nama SD tujuan / alasan tinggal kelas)
@@ -1134,12 +1139,26 @@ export const KenaikanKelasBoard: React.FC<KenaikanKelasBoardProps> = ({
               <li>
                 <strong>{confirmedBreakdown.lulusList.length} anak</strong> →{' '}
                 <strong>Lulus (Melanjutkan ke SD)</strong>
+                {confirmedBreakdown.lulusList.length > 0 && (
+                  <span className="text-xs text-[#a33a25] font-semibold">
+                    {' '}
+                    (seluruh data murid otomatis dihapus)
+                  </span>
+                )}
               </li>
               <li>
                 <strong>{confirmedBreakdown.tinggalList.length} anak</strong> →{' '}
                 <strong>Tinggal Kelas</strong> (tetap di kelas saat ini)
               </li>
             </ul>
+
+            {confirmedBreakdown.lulusList.length > 0 && (
+              <div className="p-3 rounded-xl bg-[#f8dcd6]/70 border border-[#e3a396] text-xs text-[#7a2515] leading-relaxed">
+                <strong>Pembersihan otomatis:</strong> Seluruh data murid yang dikonfirmasi{' '}
+                <strong>Lulus</strong> (profil, nilai, presensi, 7 KAIH, hasil karya, dan riwayat)
+                akan langsung terhapus dari aplikasi maupun Google Sheets agar tidak menumpuk.
+              </div>
+            )}
 
             {confirmedBreakdown.belumList.length > 0 && (
               <p className="text-xs text-[#7c4d03] bg-[#fdeab5]/70 border border-[#f2b632] rounded-xl p-2.5 m-0">

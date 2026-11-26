@@ -4,6 +4,8 @@ import path from 'path';
 import crypto from 'crypto';
 import { createInitialSeedDatabase } from '../src/data/seedDatabase';
 import { KelasType, SchoolDatabase, User, UserRole } from '../src/types';
+import { getNextClassTarget } from '../src/utils/kelas';
+import { purgeStudentsFromDatabase } from '../src/utils/studentCleanup';
 
 const IS_VERCEL = Boolean(process.env.VERCEL);
 const DATA_DIR = IS_VERCEL
@@ -575,7 +577,12 @@ export function createApiApp(): express.Express {
       res.status(401).json({ ok: false, error: 'Silakan masuk terlebih dahulu.' });
       return;
     }
-    const incoming = req.body as SchoolDatabase;
+    const rawBody = (req.body || {}) as SchoolDatabase & { graduatedSiswaIds?: unknown };
+    const requestedGraduatedIds: string[] = Array.isArray(rawBody.graduatedSiswaIds)
+      ? rawBody.graduatedSiswaIds.map((id) => String(id || '').trim()).filter(Boolean)
+      : [];
+    const { graduatedSiswaIds: _ignoredGradIds, ...incoming } = rawBody;
+
     if (!incoming || !incoming.pengaturanSekolah || !Array.isArray(incoming.siswa)) {
       res.status(400).json({ ok: false, error: 'Format data JSON tidak valid.' });
       return;
@@ -626,7 +633,7 @@ export function createApiApp(): express.Express {
       nextSiswa = currentDb.siswa.map((s) => incomingMap.get(s.siswa_id) || s);
     }
 
-    const nextDb: SchoolDatabase = {
+    let nextDb: SchoolDatabase = {
       ...currentDb,
       ...(isAdmin ? incoming : {}),
       ...(isGuru
@@ -660,6 +667,44 @@ export function createApiApp(): express.Express {
       users: nextUsers,
       siswa: nextSiswa,
     };
+
+    const approvedPurgeIds = new Set<string>();
+    if (isAdmin) {
+      for (const id of requestedGraduatedIds) approvedPurgeIds.add(id);
+      for (const s of nextDb.siswa) {
+        if (s.status_siswa === 'Lulus' || s.kelas_aktif === 'Lulus') {
+          approvedPurgeIds.add(s.siswa_id);
+        }
+      }
+    } else if (isGuru) {
+      const currentSiswaMap = new Map(currentDb.siswa.map((s) => [s.siswa_id, s]));
+      const incomingSiswaMap = new Map(incoming.siswa.map((s) => [s.siswa_id, s]));
+      for (const id of requestedGraduatedIds) {
+        const existing = currentSiswaMap.get(id);
+        if (!existing) continue;
+        const inc = incomingSiswaMap.get(id);
+        const canGraduate =
+          existing.status_siswa === 'Lulus' ||
+          existing.kelas_aktif === 'Lulus' ||
+          existing.keputusan_kenaikan === 'LULUS_KE_SD' ||
+          inc?.keputusan_kenaikan === 'LULUS_KE_SD' ||
+          inc?.status_siswa === 'Lulus' ||
+          inc?.kelas_aktif === 'Lulus' ||
+          getNextClassTarget(currentDb, existing.kelas_aktif).isFinal;
+        if (canGraduate) {
+          approvedPurgeIds.add(id);
+        }
+      }
+      for (const s of nextDb.siswa) {
+        if (s.status_siswa === 'Lulus' || s.kelas_aktif === 'Lulus') {
+          approvedPurgeIds.add(s.siswa_id);
+        }
+      }
+    }
+
+    if (approvedPurgeIds.size > 0) {
+      nextDb = purgeStudentsFromDatabase(nextDb, approvedPurgeIds);
+    }
 
     writeDb(nextDb);
     void triggerAutoSyncToSheets(nextDb);

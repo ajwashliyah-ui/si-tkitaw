@@ -1,5 +1,16 @@
 import React, { useMemo, useState } from 'react';
-import { Eye, EyeOff, UserPlus, GraduationCap, Trash2, AlertTriangle, X, UploadCloud } from 'lucide-react';
+import {
+  Eye,
+  EyeOff,
+  UserPlus,
+  GraduationCap,
+  Trash2,
+  AlertTriangle,
+  X,
+  UploadCloud,
+  FileSpreadsheet,
+  Download,
+} from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import {
   JenisKelamin,
@@ -10,6 +21,8 @@ import {
   User,
 } from '../../types';
 import { getMasterKelasList, isKelasLanjutan } from '../../utils/kelas';
+import { exportSiswaDapodikExcel } from '../../utils/dapodikImport';
+import { DapodikImportModal } from './DapodikImportModal';
 
 export const AdminSiswaUsersView: React.FC = () => {
   const {
@@ -49,6 +62,7 @@ export const AdminSiswaUsersView: React.FC = () => {
   const [confirmDeleteSiswa, setConfirmDeleteSiswa] = useState<Siswa | null>(null);
   const [confirmDeleteUser, setConfirmDeleteUser] = useState<User | null>(null);
   const [deletingAction, setDeletingAction] = useState(false);
+  const [showDapodikModal, setShowDapodikModal] = useState(false);
 
   const parentUsers = useMemo(() => db.users.filter((u) => u.role === 'OrangTua'), [db.users]);
 
@@ -397,9 +411,37 @@ export const AdminSiswaUsersView: React.FC = () => {
 
           {/* Tabel Siswa */}
           <section className="lg:col-span-8 kartu">
-            <div className="judul-baris">
-              <h2 className="text-lg text-[#0f4527]">Daftar siswa</h2>
-              <span className="text-xs text-[#55665a]">{db.siswa.length} anak</span>
+            <div className="judul-baris flex-wrap gap-2">
+              <div>
+                <h2 className="text-lg text-[#0f4527]">Daftar siswa</h2>
+                <span className="text-xs text-[#55665a]">{db.siswa.length} anak</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    exportSiswaDapodikExcel({
+                      siswaList: db.siswa,
+                      sekolah: db.pengaturanSekolah,
+                    })
+                  }
+                  disabled={db.siswa.length === 0}
+                  className="tbl polos kecil"
+                  title="Unduh seluruh data siswa dalam format Excel Dapodik"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Export Excel</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowDapodikModal(true)}
+                  className="tbl kecil"
+                  title="Import data murid dari file Excel Dapodik dengan deteksi data ganda"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span>Import Excel Dapodik</span>
+                </button>
+              </div>
             </div>
 
             {db.siswa.length === 0 ? (
@@ -838,6 +880,9 @@ export const AdminSiswaUsersView: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+      {showDapodikModal && (
+        <DapodikImportModal onClose={() => setShowDapodikModal(false)} />
       )}
     </div>
   );

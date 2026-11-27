@@ -16,40 +16,25 @@ import {
   syncSchoolDatabaseToSpreadsheet,
 } from '../utils/googleSheetsDirect';
 
+import { normalizeSchoolDatabase } from '../utils/normalizeDb';
+
 export type SessionUser = Omit<User, 'password_hash' | 'password'>;
 
-const SESSION_TOKEN_KEY = 'tk_alwashliyah_token';
-const SESSION_USER_KEY = 'tk_alwashliyah_user';
-
-function saveAppSession(token: string, user: SessionUser): void {
-  try {
-    sessionStorage.setItem(SESSION_TOKEN_KEY, token);
-    sessionStorage.setItem(SESSION_USER_KEY, JSON.stringify(user));
-  } catch {
-    // Ignore storage quota/private mode errors
+async function apiFetch(
+  url: string,
+  init: RequestInit = {},
+  bearerToken?: string | null
+): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set('X-Requested-With', 'XMLHttpRequest');
+  if (bearerToken && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${bearerToken}`);
   }
-}
-
-function clearAppSession(): void {
-  try {
-    sessionStorage.removeItem(SESSION_TOKEN_KEY);
-    sessionStorage.removeItem(SESSION_USER_KEY);
-  } catch {
-    // Ignore
-  }
-}
-
-function readStoredAppSession(): { token: string; user: SessionUser } | null {
-  try {
-    const token = sessionStorage.getItem(SESSION_TOKEN_KEY);
-    const rawUser = sessionStorage.getItem(SESSION_USER_KEY);
-    if (!token || !rawUser) return null;
-    const user = JSON.parse(rawUser) as SessionUser;
-    if (!user?.user_id || !user?.role) return null;
-    return { token, user };
-  } catch {
-    return null;
-  }
+  return fetch(url, {
+    ...init,
+    credentials: 'same-origin',
+    headers,
+  });
 }
 
 interface ToastMessage {
@@ -105,7 +90,7 @@ interface AppContextValue {
   triggerCelebration: (label?: string) => void;
   login: (username: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   setupAdmin: (payload: SetupAdminPayload) => Promise<{ ok: boolean; error?: string }>;
-  refreshSchoolInfo: () => Promise<void>;
+  refreshSchoolInfo: () => Promise<boolean>;
   createUserByAdmin: (payload: CreateUserByAdminPayload) => Promise<{ ok: boolean; error?: string }>;
   deleteUserByAdmin: (userId: string) => Promise<{ ok: boolean; error?: string }>;
   deleteSiswaWithCleanup: (siswaId: string) => Promise<void>;
@@ -289,22 +274,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ok: boolean,
       details: { schoolName?: string; syncedVersion?: number; error?: string }
     ) => {
-      const authToken = tokenRef.current;
-      if (!authToken) return;
+      if (!currentUserRef.current && !tokenRef.current) return;
       try {
-        const res = await fetch('/api/sheets/oauth-sync', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${authToken}`,
+        const res = await apiFetch(
+          '/api/sheets/oauth-sync',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ok,
+              schoolName: details.schoolName,
+              syncedVersion: details.syncedVersion,
+              error: details.error,
+            }),
           },
-          body: JSON.stringify({
-            ok,
-            schoolName: details.schoolName,
-            syncedVersion: details.syncedVersion,
-            error: details.error,
-          }),
-        });
+          tokenRef.current
+        );
         const json = await safeJson(res);
         if (res.ok && json?.syncStatus) {
           setSyncStatus(json.syncStatus);
@@ -477,26 +462,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [runDirectOAuthSync]
   );
 
-  const loadDbWithToken = useCallback(async (authToken: string): Promise<boolean> => {
+  const loadDbWithToken = useCallback(async (authToken?: string | null): Promise<boolean> => {
     try {
-      const dbRes = await fetch('/api/db', {
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const dbRes = await apiFetch('/api/db', {}, authToken);
       if (dbRes.status === 401) {
-        clearAppSession();
         setToken(null);
         setCurrentUser(null);
         return false;
       }
       const dbJson = await safeJson(dbRes);
       if (dbRes.ok && dbJson?.ok && dbJson.data) {
-        const next = dbJson.data as SchoolDatabase;
+        const next = normalizeSchoolDatabase(dbJson.data as SchoolDatabase);
         dbRef.current = next;
         setDb(next);
         setSchoolInfo(next.pengaturanSekolah);
+        if (typeof dbJson.adminClaimed === 'boolean') {
+          setAdminClaimed(dbJson.adminClaimed);
+        }
+        const effectiveToken =
+          typeof dbJson.token === 'string' && dbJson.token ? dbJson.token : authToken || null;
+        if (effectiveToken) {
+          setToken(effectiveToken);
+        }
         if (dbJson.user) {
           setCurrentUser(dbJson.user);
-          saveAppSession(authToken, dbJson.user);
         }
         if (typeof dbJson.dbVersion === 'number') {
           dbVersionRef.current = dbJson.dbVersion;
@@ -518,9 +507,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, []);
 
-  const refreshSchoolInfo = useCallback(async () => {
+  const refreshSchoolInfo = useCallback(async (): Promise<boolean> => {
     try {
-      const infoRes = await fetch('/api/school-info');
+      const infoRes = await apiFetch('/api/school-info');
       const json = await safeJson(infoRes);
       if (json?.ok && json.pengaturanSekolah) {
         setSchoolInfo(json.pengaturanSekolah);
@@ -539,29 +528,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             );
           }
         }
+        return Boolean(json.authenticated);
       }
+      return false;
     } catch {
       // Fallback to existing metadata if offline or static host
+      return false;
     }
   }, []);
 
   useEffect(() => {
     let active = true;
     const init = async () => {
-      await refreshSchoolInfo();
-
-      const stored = readStoredAppSession();
-      if (active && stored?.token) {
-        setToken(stored.token);
-        setCurrentUser(stored.user);
-        const valid = await loadDbWithToken(stored.token);
-        if (!valid && active) {
-          clearAppSession();
+      const hasCookieSession = await refreshSchoolInfo();
+      if (hasCookieSession && active) {
+        const restored = await loadDbWithToken(null);
+        if (!restored && active) {
           setToken(null);
           setCurrentUser(null);
         }
+      } else if (active) {
+        setToken(null);
+        setCurrentUser(null);
       }
-
       if (active) setLoading(false);
     };
     void init();
@@ -572,20 +561,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Real-time background sync watcher (polls lightweight /api/sync-status every 4s while visible)
   useEffect(() => {
-    if (!token || !currentUser) return;
+    if (!currentUser) return;
     let active = true;
 
     const checkServerUpdates = async () => {
       if (!active || document.visibilityState === 'hidden') return;
       const authToken = tokenRef.current;
-      if (!authToken) return;
       try {
-        const res = await fetch('/api/sync-status', {
-          headers: { Authorization: `Bearer ${authToken}` },
-        });
+        const res = await apiFetch('/api/sync-status', {}, authToken);
         if (!active) return;
         if (res.status === 401) {
-          clearAppSession();
           setToken(null);
           setCurrentUser(null);
           return;
@@ -655,14 +640,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       clearInterval(intervalId);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [token, currentUser, loadDbWithToken, runDirectOAuthSync]);
+  }, [currentUser, loadDbWithToken, runDirectOAuthSync]);
 
   const login = useCallback(
     async (username: string, password: string): Promise<{ ok: boolean; error?: string }> => {
       try {
         const cleanUsername = username.trim().replace(/^@+/, '').toLowerCase();
         const cleanPassword = password.replace(/[\r\n]+/g, '');
-        const res = await fetch('/api/login', {
+        const res = await apiFetch('/api/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username: cleanUsername, password: cleanPassword }),
@@ -682,7 +667,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           };
         }
         if (data.data) {
-          const next = data.data as SchoolDatabase;
+          const next = normalizeSchoolDatabase(data.data as SchoolDatabase);
           dbRef.current = next;
           setDb(next);
           setSchoolInfo(next.pengaturanSekolah);
@@ -693,7 +678,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         } else {
           await loadDbWithToken(data.token);
         }
-        saveAppSession(data.token, data.user);
         setToken(data.token);
         setCurrentUser(data.user);
         addToast(`Selamat datang, ${data.user.nama_lengkap}`, 'success');
@@ -715,7 +699,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           nama_lengkap: payload.nama_lengkap.trim(),
           no_hp: payload.no_hp?.trim() || '',
         };
-        const res = await fetch('/api/setup-admin', {
+        const res = await apiFetch('/api/setup-admin', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(cleanPayload),
@@ -738,7 +722,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         setAdminClaimed(true);
         if (data.data) {
-          const next = data.data as SchoolDatabase;
+          const next = normalizeSchoolDatabase(data.data as SchoolDatabase);
           dbRef.current = next;
           setDb(next);
           setSchoolInfo(next.pengaturanSekolah);
@@ -749,7 +733,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         } else {
           await loadDbWithToken(data.token);
         }
-        saveAppSession(data.token, data.user);
         setToken(data.token);
         setCurrentUser(data.user);
         triggerCelebration('Akun Admin siap!');
@@ -766,20 +749,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     async (payload: CreateUserByAdminPayload): Promise<{ ok: boolean; error?: string }> => {
       return enqueueMutation(async () => {
         const authToken = tokenRef.current;
-        if (!authToken) return { ok: false, error: 'Sesi berakhir. Silakan masuk kembali.' };
+        if (!authToken && !currentUserRef.current) {
+          return { ok: false, error: 'Sesi berakhir. Silakan masuk kembali.' };
+        }
         setSaving(true);
         try {
-          const res = await fetch('/api/admin/users', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${authToken}`,
+          const res = await apiFetch(
+            '/api/admin/users',
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
             },
-            body: JSON.stringify(payload),
-          });
+            authToken
+          );
           const data = await safeJson(res);
           if (res.status === 401) {
-            clearAppSession();
             setToken(null);
             setCurrentUser(null);
             addToast('Sesi login berakhir. Silakan masuk kembali.', 'error');
@@ -790,10 +775,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             addToast(msg, 'error');
             return { ok: false, error: msg };
           }
-          const nextDb: SchoolDatabase = {
+          const nextDb: SchoolDatabase = normalizeSchoolDatabase({
             ...dbRef.current,
             users: [...dbRef.current.users, data.user],
-          };
+          });
           dbRef.current = nextDb;
           setDb(nextDb);
           if (typeof data.dbVersion === 'number') {
@@ -819,20 +804,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     async (userId: string): Promise<{ ok: boolean; error?: string }> => {
       return enqueueMutation(async () => {
         const authToken = tokenRef.current;
-        if (!authToken) return { ok: false, error: 'Sesi berakhir. Silakan masuk kembali.' };
+        if (!authToken && !currentUserRef.current) {
+          return { ok: false, error: 'Sesi berakhir. Silakan masuk kembali.' };
+        }
         setSaving(true);
         try {
-          const res = await fetch('/api/admin/users', {
-            method: 'DELETE',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${authToken}`,
+          const res = await apiFetch(
+            '/api/admin/users',
+            {
+              method: 'DELETE',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ user_id: userId }),
             },
-            body: JSON.stringify({ user_id: userId }),
-          });
+            authToken
+          );
           const data = await safeJson(res);
           if (res.status === 401) {
-            clearAppSession();
             setToken(null);
             setCurrentUser(null);
             addToast('Sesi login berakhir. Silakan masuk kembali.', 'error');
@@ -843,7 +830,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             addToast(msg, 'error');
             return { ok: false, error: msg };
           }
-          const nextDb: SchoolDatabase = {
+          const nextDb: SchoolDatabase = normalizeSchoolDatabase({
             ...dbRef.current,
             users: Array.isArray(data.users)
               ? data.users
@@ -858,7 +845,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               : dbRef.current.riwayatKelas.map((r) =>
                   r.wali_kelas_id === userId ? { ...r, wali_kelas_id: '' } : r
                 ),
-          };
+          });
           dbRef.current = nextDb;
           setDb(nextDb);
           if (typeof data.dbVersion === 'number') {
@@ -886,17 +873,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       oauthSyncTimerRef.current = null;
     }
     const authToken = tokenRef.current;
-    if (authToken) {
-      try {
-        await fetch('/api/logout', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${authToken}` },
-        });
-      } catch {
-        // Ignore network errors during logout
-      }
+    try {
+      await apiFetch('/api/logout', { method: 'POST' }, authToken);
+    } catch {
+      // Ignore network errors during logout
     }
-    clearAppSession();
     setToken(null);
     setCurrentUser(null);
   }, []);
@@ -904,24 +885,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const changePassword = useCallback(
     async (lama: string, baru: string): Promise<{ ok: boolean; error?: string }> => {
       const authToken = tokenRef.current;
-      if (!authToken) return { ok: false, error: 'Sesi berakhir.' };
+      if (!authToken && !currentUserRef.current) return { ok: false, error: 'Sesi berakhir.' };
       try {
-        const res = await fetch('/api/change-password', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${authToken}`,
+        const res = await apiFetch(
+          '/api/change-password',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lama, baru }),
           },
-          body: JSON.stringify({ lama, baru }),
-        });
+          authToken
+        );
         const data = await safeJson(res);
         if (!res.ok || !data?.ok) {
           return { ok: false, error: data?.error || 'Gagal mengganti password.' };
         }
         setToken(data.token);
-        if (currentUserRef.current) {
-          saveAppSession(data.token, currentUserRef.current);
-        }
         addToast('Password berhasil diganti', 'success');
         return { ok: true };
       } catch {
@@ -939,13 +918,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     ): Promise<boolean> => {
       return enqueueMutation(async () => {
         const prevDb = dbRef.current;
-        const finalDb = updater(prevDb);
+        const finalDb = normalizeSchoolDatabase(updater(prevDb));
         dbRef.current = finalDb;
         setDb(finalDb);
         setSchoolInfo(finalDb.pengaturanSekolah);
 
         const authToken = tokenRef.current;
-        if (!authToken) return false;
+        if (!authToken && !currentUserRef.current) return false;
 
         setSaving(true);
         try {
@@ -953,14 +932,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             options?.graduatedSiswaIds && options.graduatedSiswaIds.length > 0
               ? { ...finalDb, graduatedSiswaIds: options.graduatedSiswaIds }
               : finalDb;
-          const res = await fetch('/api/db', {
-            method: 'PUT',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${authToken}`,
+          const res = await apiFetch(
+            '/api/db',
+            {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
             },
-            body: JSON.stringify(payload),
-          });
+            authToken
+          );
           const json = await safeJson(res);
 
           if (res.status === 401) {
@@ -968,7 +948,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             dbRef.current = prevDb;
             setDb(prevDb);
             setSchoolInfo(prevDb.pengaturanSekolah);
-            clearAppSession();
             setToken(null);
             setCurrentUser(null);
             addToast('Sesi login berakhir. Perubahan dibatalkan, silakan masuk kembali.', 'error');
@@ -984,7 +963,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             return false;
           }
 
-          const authoritativeDb = (json.data as SchoolDatabase) || finalDb;
+          const authoritativeDb = normalizeSchoolDatabase((json.data as SchoolDatabase) || finalDb);
           dbRef.current = authoritativeDb;
           setDb(authoritativeDb);
           setSchoolInfo(authoritativeDb.pengaturanSekolah);
@@ -1084,16 +1063,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const testSheetsConnection = useCallback(
     async (url?: string, syncKey?: string) => {
       const authToken = tokenRef.current;
-      if (!authToken) return { ok: false, message: 'Sesi berakhir.' };
+      if (!authToken && !currentUserRef.current) return { ok: false, message: 'Sesi berakhir.' };
       try {
-        const res = await fetch('/api/sheets/test', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${authToken}`,
+        const res = await apiFetch(
+          '/api/sheets/test',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, syncKey }),
           },
-          body: JSON.stringify({ url, syncKey }),
-        });
+          authToken
+        );
         const json = await safeJson(res);
         if (json?.syncStatus) setSyncStatus(json.syncStatus);
         if (res.ok && json?.ok) {
@@ -1218,7 +1198,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const pushToSheets = useCallback(async () => {
     const authToken = tokenRef.current;
-    if (!authToken) return;
+    if (!authToken && !currentUserRef.current) return;
 
     const currentDb = dbRef.current;
     const directSheetId = extractSpreadsheetId(
@@ -1262,18 +1242,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       if (gasUrl) {
-        const res = await fetch('/api/sheets/push', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${authToken}`,
+        const res = await apiFetch(
+          '/api/sheets/push',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              url: gasUrl,
+              syncKey: currentDb.pengaturanSekolah.gas_sync_key,
+              dbSnapshot: currentUserRef.current?.role === 'Admin' ? currentDb : undefined,
+            }),
           },
-          body: JSON.stringify({
-            url: gasUrl,
-            syncKey: currentDb.pengaturanSekolah.gas_sync_key,
-            dbSnapshot: currentUserRef.current?.role === 'Admin' ? currentDb : undefined,
-          }),
-        });
+          authToken
+        );
         const json = await safeJson(res);
         if (json?.syncStatus) setSyncStatus(json.syncStatus);
         if (res.ok && json?.ok) {
@@ -1297,7 +1278,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const pullFromSheets = useCallback(async () => {
     const authToken = tokenRef.current;
-    if (!authToken) return;
+    if (!authToken && !currentUserRef.current) return;
     const currentDb = dbRef.current;
     const gasUrl = currentDb.pengaturanSekolah.gas_webapp_url?.trim() || '';
     const directSheetId = extractSpreadsheetId(
@@ -1311,21 +1292,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setSaving(true);
     try {
-      const res = await fetch('/api/sheets/pull', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
+      const res = await apiFetch(
+        '/api/sheets/pull',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: gasUrl,
+            syncKey: currentDb.pengaturanSekolah.gas_sync_key,
+          }),
         },
-        body: JSON.stringify({
-          url: gasUrl,
-          syncKey: currentDb.pengaturanSekolah.gas_sync_key,
-        }),
-      });
+        authToken
+      );
       const json = await safeJson(res);
       if (json?.syncStatus) setSyncStatus(json.syncStatus);
       if (res.ok && json?.ok && json.data) {
-        const nextDb = json.data as SchoolDatabase;
+        const nextDb = normalizeSchoolDatabase(json.data as SchoolDatabase);
         dbRef.current = nextDb;
         setDb(nextDb);
         setSchoolInfo(nextDb.pengaturanSekolah);

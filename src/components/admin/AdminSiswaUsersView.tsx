@@ -220,10 +220,10 @@ export const AdminSiswaUsersView: React.FC = () => {
   };
 
   const handleQuickAutoCreateParent = async (s: Siswa) => {
-    const cleanChild = s.nama_anak.trim() || 'Murid';
+    const cleanChild = String(s.nama_anak ?? '').trim() || 'Murid';
     const suggestedUsername = buildAutoParentUsername(
       cleanChild,
-      s.nis,
+      String(s.nis ?? ''),
       db.users.map((u) => u.username)
     );
     const defaultPassword = '123456';
@@ -829,7 +829,7 @@ export const AdminSiswaUsersView: React.FC = () => {
                               aria-label={`Kelas ${s.nama_anak}`}
                               value={s.kelas_aktif}
                               onChange={(e) => handleUpdateSiswaKelas(s.siswa_id, e.target.value)}
-                              className="isian-kontrol min-h-[36px] py-1 text-xs w-auto max-w-[160px]"
+                              className="isian-kontrol min-h-[36px] py-1 text-xs min-w-[116px] w-full max-w-[175px]"
                             >
                               {!kelasList.some((k) => k.nama_kelas === s.kelas_aktif) && (
                                 <option value={s.kelas_aktif}>{s.kelas_aktif}</option>
@@ -852,7 +852,7 @@ export const AdminSiswaUsersView: React.FC = () => {
                                     aria-label={`Akun orang tua untuk ${s.nama_anak}`}
                                     value={s.ortu_user_id}
                                     onChange={(e) => handleUpdateSiswaOrtu(s.siswa_id, e.target.value)}
-                                    className="isian-kontrol min-h-[36px] py-1 text-xs max-w-[190px]"
+                                    className="isian-kontrol min-h-[36px] py-1 text-xs min-w-[196px] w-full max-w-[235px]"
                                   >
                                     <option value="">Belum dihubungkan</option>
                                     {parentUsers.map((u) => (
@@ -890,7 +890,7 @@ export const AdminSiswaUsersView: React.FC = () => {
                             onChange={(e) =>
                               handleUpdateSiswaStatus(s.siswa_id, e.target.value as StatusSiswa)
                             }
-                            className="isian-kontrol min-h-[36px] py-1 text-xs w-auto"
+                            className="isian-kontrol min-h-[36px] py-1 text-xs min-w-[96px] w-auto"
                           >
                             <option value="Aktif">Aktif</option>
                             <option value="Lulus">Lulus</option>

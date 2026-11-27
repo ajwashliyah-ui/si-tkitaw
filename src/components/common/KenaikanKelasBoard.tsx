@@ -90,7 +90,9 @@ export const KenaikanKelasBoard: React.FC<KenaikanKelasBoardProps> = ({
     return db.siswa.filter((s) => {
       if (s.status_siswa === 'Pindah') return false;
       if (kelasFilter !== 'Semua' && s.kelas_aktif !== kelasFilter) return false;
-      if (q && !s.nama_anak.toLowerCase().includes(q) && !s.nis.toLowerCase().includes(q)) {
+      const namaStr = String(s.nama_anak ?? '').toLowerCase();
+      const nisStr = String(s.nis ?? '').toLowerCase();
+      if (q && !namaStr.includes(q) && !nisStr.includes(q)) {
         return false;
       }
       return true;
@@ -99,8 +101,13 @@ export const KenaikanKelasBoard: React.FC<KenaikanKelasBoardProps> = ({
 
   const columnGroups = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const matchSearch = (s: Siswa) =>
-      !q || s.nama_anak.toLowerCase().includes(q) || s.nis.toLowerCase().includes(q);
+    const matchSearch = (s: Siswa) => {
+      if (!q) return true;
+      return (
+        String(s.nama_anak ?? '').toLowerCase().includes(q) ||
+        String(s.nis ?? '').toLowerCase().includes(q)
+      );
+    };
 
     const groups: Record<string, Siswa[]> = {};
     for (const k of kelasList) {

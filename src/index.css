@@ -1057,21 +1057,23 @@ figcaption {
   opacity: 0.08;
 }
 
-/* Input styling harmonised with warm palette */
-.isian-kontrol {
-  width: 100%;
-  min-height: 44px;
-  padding: 8px 12px;
-  border: 2px solid #b5baad;
-  border-radius: var(--r);
-  background: #fff;
-  color: var(--tinta);
-  font-size: 0.92rem;
-  transition: border-color 0.15s;
-}
-.isian-kontrol:focus {
-  outline: none;
-  border-color: var(--hijau);
+@layer components {
+  /* Input styling harmonised with warm palette */
+  .isian-kontrol {
+    width: 100%;
+    min-height: 44px;
+    padding: 8px 12px;
+    border: 2px solid #b5baad;
+    border-radius: var(--r);
+    background: #fff;
+    color: var(--tinta);
+    font-size: 0.92rem;
+    transition: border-color 0.15s;
+  }
+  .isian-kontrol:focus {
+    outline: none;
+    border-color: var(--hijau);
+  }
 }
 
 /* Bottom Centered Toast */

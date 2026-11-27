@@ -434,6 +434,14 @@ function syncFullDatabase_(db) {
   return { synced: true, timestamp: new Date().toISOString() };
 }
 
+var STRING_SHEET_HEADERS_ = {
+  user_id: true, username: true, password_hash: true, role: true, nama_lengkap: true, no_hp: true, kelas_ampu: true,
+  siswa_id: true, nis: true, nama_anak: true, jenis_kelamin: true, ortu_user_id: true, kelas_aktif: true, status_siswa: true,
+  ta_id: true, nama_ta: true, kelas: true, wali_kelas_id: true, kelas_id: true, nama_kelas: true, jenjang: true,
+  id_siswa: true, nama_siswa: true, kode_item: true, halaman_iqra: true, npsn: true, tahun_ajaran_aktif: true,
+  folder_drive_id: true, google_spreadsheet_id: true
+};
+
 function normalizeGasCellValue_(val, headerName) {
   if (val instanceof Date) {
     var tz = Session.getScriptTimeZone() || 'Asia/Jakarta';
@@ -442,6 +450,9 @@ function normalizeGasCellValue_(val, headerName) {
       return val.toISOString();
     }
     return Utilities.formatDate(val, tz, 'yyyy-MM-dd');
+  }
+  if (STRING_SHEET_HEADERS_[headerName] && val !== null && val !== undefined) {
+    return String(val);
   }
   return val;
 }

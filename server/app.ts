@@ -5,43 +5,21 @@ import crypto from 'crypto';
 import { createInitialSeedDatabase } from '../src/data/seedDatabase';
 import { KelasType, SchoolDatabase, User, UserRole } from '../src/types';
 import { getNextClassTarget } from '../src/utils/kelas';
+import {
+  isAdminClaimedDb,
+  isUserActive,
+  mergePulledGasDatabase,
+  normalizeSchoolDatabase,
+  normalizeUsernameStr,
+} from '../src/utils/normalizeDb';
 import { purgeStudentsFromDatabase } from '../src/utils/studentCleanup';
 
-const IS_VERCEL = Boolean(process.env.VERCEL);
-const DATA_DIR = IS_VERCEL
-  ? path.join('/tmp', 'tk-alwashliyah-data')
-  : path.resolve(process.cwd(), 'data');
-const DB_FILE = path.join(DATA_DIR, 'db.json');
-const SECRET_FILE = path.join(DATA_DIR, '.session-secret');
-
-function loadOrCreateSessionSecret(): string {
-  if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
-  if (IS_VERCEL) {
-    return crypto
-      .createHash('sha256')
-      .update(`${process.env.VERCEL_PROJECT_ID || process.env.VERCEL_URL || 'session-v1'}:token`)
-      .digest('hex');
-  }
-  try {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    }
-    if (fs.existsSync(SECRET_FILE)) {
-      const existing = fs.readFileSync(SECRET_FILE, 'utf8').trim();
-      if (existing.length >= 32) return existing;
-    }
-    const generated = crypto.randomBytes(32).toString('hex');
-    fs.writeFileSync(SECRET_FILE, generated, { encoding: 'utf8', mode: 0o600 });
-    return generated;
-  } catch {
-    return crypto
-      .createHash('sha256')
-      .update(`${process.cwd()}:tk-alwashliyah-session-v1`)
-      .digest('hex');
-  }
-}
-
-const TOKEN_SECRET = loadOrCreateSessionSecret();
+const SESSION_COOKIE_NAME = 'tk_aw_session';
+const HYDRATE_TTL_MS = 15000;
+const FORCE_HYDRATE_MIN_INTERVAL_MS = 2500;
+const LEGACY_BROKEN_GAS_URLS = new Set([
+  'https://script.google.com/macros/s/AKfycbx7YdlltbMU1AYi1wKghGf1fGL5g4HU2dZqB2dhJri0w36UuT3mgp43ivXTIA51niJn2g/exec',
+]);
 
 export interface SessionEntry {
   user: Omit<User, 'password_hash' | 'password'>;
@@ -56,16 +34,17 @@ export interface SyncStatusState {
   syncedVersion?: number;
 }
 
-const revokedTokens = new Set<string>();
-let memoryDbCache: SchoolDatabase | null = null;
-let dbVersion = Date.now();
-let syncStatus: SyncStatusState = {
-  connected: false,
-  lastSyncAt: null,
-  lastError: null,
-  schoolName: null,
-  syncedVersion: 0,
-};
+export interface CreateApiAppOptions {
+  dataDir?: string;
+  isVercel?: boolean;
+  defaultGasUrl?: string;
+  gasBridgeFn?: (
+    gasUrl: string,
+    syncKey: string,
+    action: string,
+    payload?: unknown
+  ) => Promise<{ ok: boolean; data?: any; school?: string; sheets?: number; error?: string }>;
+}
 
 function hashSha256(text: string): string {
   return crypto.createHash('sha256').update(text, 'utf8').digest('hex');
@@ -100,155 +79,12 @@ function verifyPassword(password: string, storedHash: string): boolean {
   return false;
 }
 
-function normalizeUsername(raw: unknown): string {
-  return String(raw || '').trim().replace(/^@+/, '').toLowerCase();
-}
-
-function isUserActive(u: Pick<User, 'status_aktif'>): boolean {
-  return u.status_aktif !== false && String(u.status_aktif).toLowerCase() !== 'false';
-}
-
 function verifyPasswordFlexible(rawPassword: unknown, storedHash: string): boolean {
   const raw = String(rawPassword ?? '');
   if (verifyPassword(raw, storedHash)) return true;
   const noNewlines = raw.replace(/[\r\n]+/g, '');
   if (noNewlines !== raw && verifyPassword(noNewlines, storedHash)) return true;
   return false;
-}
-
-function isAdminClaimed(db: SchoolDatabase): boolean {
-  return Boolean(db.pengaturanSekolah.admin_claimed) || db.users.some((u) => u.role === 'Admin' && isUserActive(u));
-}
-
-function issueSignedToken(user: Omit<User, 'password_hash' | 'password'>): string {
-  const payloadObj: SessionEntry = {
-    user,
-    expiresAt: Date.now() + 1000 * 60 * 60 * 12,
-  };
-  const payloadB64 = Buffer.from(JSON.stringify(payloadObj), 'utf8').toString('base64url');
-  const sig = crypto.createHmac('sha256', TOKEN_SECRET).update(payloadB64).digest('base64url');
-  return `${payloadB64}.${sig}`;
-}
-
-function verifySignedToken(token: string): SessionEntry | null {
-  if (!token || revokedTokens.has(token)) return null;
-  const parts = token.split('.');
-  if (parts.length !== 2) return null;
-  const [payloadB64, sig] = parts;
-  const expectedSig = crypto.createHmac('sha256', TOKEN_SECRET).update(payloadB64).digest('base64url');
-  const sigBuf = Buffer.from(sig);
-  const expBuf = Buffer.from(expectedSig);
-  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as SessionEntry;
-    if (!parsed?.user || !parsed.expiresAt || Date.now() > parsed.expiresAt) {
-      return null;
-    }
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function sanitizeDbForRole(db: SchoolDatabase, role: UserRole): SchoolDatabase {
-  const isAdmin = role === 'Admin';
-  return {
-    ...db,
-    pengaturanSekolah: isAdmin
-      ? db.pengaturanSekolah
-      : { ...db.pengaturanSekolah, gas_sync_key: '' },
-    users: isAdmin ? db.users : db.users.map((u) => ({ ...u, password_hash: '' })),
-  };
-}
-
-function applyDefaultGasUrl(db: SchoolDatabase): SchoolDatabase {
-  if (!isAllowedGasUrl(db.pengaturanSekolah?.gas_webapp_url)) {
-    const fallbackUrl = readDefaultGasUrl();
-    if (fallbackUrl) {
-      return {
-        ...db,
-        pengaturanSekolah: {
-          ...db.pengaturanSekolah,
-          gas_webapp_url: fallbackUrl,
-        },
-      };
-    }
-  }
-  return db;
-}
-
-let dbMutationQueue: Promise<unknown> = Promise.resolve();
-function enqueueDbMutation<T>(fn: () => Promise<T> | T): Promise<T> {
-  const next = dbMutationQueue.then(
-    () => fn(),
-    () => fn()
-  );
-  dbMutationQueue = next.then(
-    () => undefined,
-    () => undefined
-  );
-  return next;
-}
-
-function readDb(): SchoolDatabase {
-  try {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    }
-    if (!fs.existsSync(DB_FILE)) {
-      let seed: SchoolDatabase | null = memoryDbCache;
-      if (!seed && IS_VERCEL) {
-        const bundledDbPath = path.resolve(process.cwd(), 'data', 'db.json');
-        if (fs.existsSync(bundledDbPath)) {
-          try {
-            seed = JSON.parse(fs.readFileSync(bundledDbPath, 'utf8')) as SchoolDatabase;
-          } catch {
-            seed = null;
-          }
-        }
-      }
-      if (!seed) {
-        seed = createInitialSeedDatabase();
-      }
-      seed = applyDefaultGasUrl(seed);
-      memoryDbCache = seed;
-      fs.writeFileSync(DB_FILE, JSON.stringify(seed, null, 2), 'utf8');
-      return seed;
-    }
-    const raw = fs.readFileSync(DB_FILE, 'utf8');
-    const parsed = JSON.parse(raw) as SchoolDatabase;
-    memoryDbCache = parsed;
-    return parsed;
-  } catch {
-    if (!memoryDbCache) {
-      memoryDbCache = applyDefaultGasUrl(createInitialSeedDatabase());
-    }
-    return memoryDbCache;
-  }
-}
-
-function writeDb(db: SchoolDatabase): void {
-  dbVersion = Math.max(Date.now(), dbVersion + 1);
-  memoryDbCache = db;
-  try {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    }
-    const tmpFile = `${DB_FILE}.${process.pid}.tmp`;
-    fs.writeFileSync(tmpFile, JSON.stringify(db, null, 2), 'utf8');
-    fs.renameSync(tmpFile, DB_FILE);
-  } catch {
-    // Keep memory cache active if disk storage is ephemeral/restricted
-  }
-}
-
-function getAuthenticatedSession(req: express.Request): SessionEntry | null {
-  const auth = req.headers.authorization;
-  if (!auth || !auth.startsWith('Bearer ')) return null;
-  const token = auth.slice(7).trim();
-  return verifySignedToken(token);
 }
 
 function isAllowedGasUrl(rawUrl?: string): boolean {
@@ -265,203 +101,539 @@ function isAllowedGasUrl(rawUrl?: string): boolean {
   }
 }
 
-function readDefaultGasUrl(): string {
-  const fromEnv = process.env.GAS_WEBAPP_URL?.trim();
-  if (isAllowedGasUrl(fromEnv)) return fromEnv!;
-
-  const candidates = [
-    path.resolve(process.cwd(), 'config.js'),
-    path.resolve(process.cwd(), 'dist', 'config.js'),
-    path.resolve(process.cwd(), 'public', 'config.js'),
-  ];
-  for (const filePath of candidates) {
-    try {
-      if (!fs.existsSync(filePath)) continue;
-      const content = fs.readFileSync(filePath, 'utf8');
-      const match = content.match(/GAS_WEBAPP_URL\s*:\s*["'](https:\/\/script\.google\.com\/[^"']+)["']/);
-      if (match?.[1] && isAllowedGasUrl(match[1])) {
-        return match[1].trim();
-      }
-    } catch {
-      // Ignore unreadable config file
-    }
-  }
-  return '';
+function sanitizeDbForRole(db: SchoolDatabase, role: UserRole): SchoolDatabase {
+  const isAdmin = role === 'Admin';
+  return {
+    ...db,
+    pengaturanSekolah: isAdmin
+      ? db.pengaturanSekolah
+      : { ...db.pengaturanSekolah, gas_sync_key: '' },
+    users: isAdmin ? db.users : db.users.map((u) => ({ ...u, password_hash: '' })),
+  };
 }
 
-async function callGasBridge(
-  gasUrl: string,
-  syncKey: string,
-  action: string,
-  payload: unknown = {}
-): Promise<{ ok: boolean; data?: any; school?: string; sheets?: number; error?: string }> {
-  const effectiveUrl = isAllowedGasUrl(gasUrl) ? gasUrl.trim() : readDefaultGasUrl();
-  if (!isAllowedGasUrl(effectiveUrl)) {
-    return {
-      ok: false,
-      error: 'URL Web App harus menggunakan alamat resmi https://script.google.com/macros/s/.../exec',
-    };
+function parseCookies(req: express.Request): Record<string, string> {
+  const raw = req.headers.cookie;
+  if (!raw) return {};
+  const out: Record<string, string> = {};
+  for (const part of raw.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx <= 0) continue;
+    const key = part.slice(0, idx).trim();
+    const val = part.slice(idx + 1).trim();
+    if (!key) continue;
+    try {
+      out[key] = decodeURIComponent(val);
+    } catch {
+      out[key] = val;
+    }
   }
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
-    const res = await fetch(effectiveUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({
-        action,
-        syncKey: syncKey || 'WASHLIYAH_SYNC_2026',
-        payload,
-      }),
-      redirect: 'follow',
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-    const text = await res.text();
-    if (text.trim().startsWith('<')) {
+  return out;
+}
+
+function isSecureRequest(req: express.Request): boolean {
+  const proto = String(req.headers['x-forwarded-proto'] || '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
+  const ssl = String(req.headers['x-forwarded-ssl'] || '')
+    .trim()
+    .toLowerCase();
+  const origin = String(req.headers.origin || '').trim().toLowerCase();
+  const referer = String(req.headers.referer || '').trim().toLowerCase();
+  return Boolean(
+    req.secure ||
+      proto === 'https' ||
+      ssl === 'on' ||
+      origin.startsWith('https://') ||
+      referer.startsWith('https://')
+  );
+}
+
+function setSessionCookie(req: express.Request, res: express.Response, token: string): void {
+  const secure = isSecureRequest(req);
+  const attrs = [
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    'Path=/',
+    `Max-Age=${60 * 60 * 12}`,
+    'HttpOnly',
+    secure ? 'SameSite=None' : 'SameSite=Lax',
+    ...(secure ? ['Secure', 'Partitioned'] : []),
+  ];
+  res.setHeader('Set-Cookie', attrs.join('; '));
+}
+
+function clearSessionCookie(req: express.Request, res: express.Response): void {
+  const secure = isSecureRequest(req);
+  const attrs = [
+    `${SESSION_COOKIE_NAME}=`,
+    'Path=/',
+    'Max-Age=0',
+    'HttpOnly',
+    secure ? 'SameSite=None' : 'SameSite=Lax',
+    ...(secure ? ['Secure', 'Partitioned'] : []),
+  ];
+  res.setHeader('Set-Cookie', attrs.join('; '));
+}
+
+function isCsrfSafeForCookieMutation(req: express.Request): boolean {
+  const method = req.method.toUpperCase();
+  if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return true;
+  const xrw = String(req.headers['x-requested-with'] || '').trim().toLowerCase();
+  if (xrw === 'xmlhttprequest') return true;
+
+  const expectedHost = String(req.headers['x-forwarded-host'] || req.headers.host || '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
+  if (!expectedHost) return false;
+
+  const origin = req.headers.origin;
+  if (origin) {
+    try {
+      return new URL(origin).host.toLowerCase() === expectedHost;
+    } catch {
+      return false;
+    }
+  }
+  const referer = req.headers.referer;
+  if (referer) {
+    try {
+      return new URL(referer).host.toLowerCase() === expectedHost;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+export function createApiApp(options: CreateApiAppOptions = {}): express.Express {
+  const IS_VERCEL = options.isVercel ?? Boolean(process.env.VERCEL);
+  const DATA_DIR = options.dataDir
+    ? path.resolve(options.dataDir)
+    : IS_VERCEL
+    ? path.join('/tmp', 'tk-alwashliyah-data')
+    : path.resolve(process.cwd(), 'data');
+  const DB_FILE = path.join(DATA_DIR, 'db.json');
+  const SECRET_FILE = path.join(DATA_DIR, '.session-secret');
+
+  function loadOrCreateSessionSecret(): string {
+    if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
+    if (IS_VERCEL) {
+      return crypto
+        .createHash('sha256')
+        .update(`${process.env.VERCEL_PROJECT_ID || process.env.VERCEL_URL || 'session-v1'}:token`)
+        .digest('hex');
+    }
+    try {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+      if (fs.existsSync(SECRET_FILE)) {
+        const existing = fs.readFileSync(SECRET_FILE, 'utf8').trim();
+        if (existing.length >= 32) return existing;
+      }
+      const generated = crypto.randomBytes(32).toString('hex');
+      fs.writeFileSync(SECRET_FILE, generated, { encoding: 'utf8', mode: 0o600 });
+      return generated;
+    } catch {
+      return crypto
+        .createHash('sha256')
+        .update(`${process.cwd()}:tk-alwashliyah-session-v1`)
+        .digest('hex');
+    }
+  }
+
+  const TOKEN_SECRET = loadOrCreateSessionSecret();
+  const revokedTokens = new Set<string>();
+  let memoryDbCache: SchoolDatabase | null = null;
+  let dbVersion = Date.now();
+  let lastLocalMutationAt = 0;
+  let lastGasHydrateAt = 0;
+  let gasHydrationPromise: Promise<void> | null = null;
+  let gasSyncRunning: Promise<void> | null = null;
+  let pendingGasSyncDb: SchoolDatabase | null = null;
+  let syncStatus: SyncStatusState = {
+    connected: false,
+    lastSyncAt: null,
+    lastError: null,
+    schoolName: null,
+    syncedVersion: 0,
+  };
+
+  function readDefaultGasUrl(): string {
+    if (options.defaultGasUrl && isAllowedGasUrl(options.defaultGasUrl)) {
+      return options.defaultGasUrl.trim();
+    }
+    const fromEnv = process.env.GAS_WEBAPP_URL?.trim();
+    if (isAllowedGasUrl(fromEnv)) return fromEnv!;
+
+    const candidates = [
+      path.resolve(process.cwd(), 'config.js'),
+      path.resolve(process.cwd(), 'dist', 'config.js'),
+      path.resolve(process.cwd(), 'public', 'config.js'),
+    ];
+    for (const filePath of candidates) {
+      try {
+        if (!fs.existsSync(filePath)) continue;
+        const content = fs.readFileSync(filePath, 'utf8');
+        const match = content.match(
+          /GAS_WEBAPP_URL\s*:\s*["'](https:\/\/script\.google\.com\/[^"']+)["']/
+        );
+        if (match?.[1] && isAllowedGasUrl(match[1])) {
+          return match[1].trim();
+        }
+      } catch {
+        // Ignore unreadable config file
+      }
+    }
+    return '';
+  }
+
+  function applyDefaultGasUrl(db: SchoolDatabase): SchoolDatabase {
+    const fallbackUrl = readDefaultGasUrl();
+    const currentUrl = String(db.pengaturanSekolah?.gas_webapp_url || '').trim();
+    const shouldReplace =
+      Boolean(fallbackUrl) &&
+      (!isAllowedGasUrl(currentUrl) || LEGACY_BROKEN_GAS_URLS.has(currentUrl));
+    if (shouldReplace) {
+      return {
+        ...db,
+        pengaturanSekolah: {
+          ...db.pengaturanSekolah,
+          gas_webapp_url: fallbackUrl,
+        },
+      };
+    }
+    return db;
+  }
+
+  let dbMutationQueue: Promise<unknown> = Promise.resolve();
+  function enqueueDbMutation<T>(fn: () => Promise<T> | T): Promise<T> {
+    const next = dbMutationQueue.then(
+      () => fn(),
+      () => fn()
+    );
+    dbMutationQueue = next.then(
+      () => undefined,
+      () => undefined
+    );
+    return next;
+  }
+
+  function readDb(): SchoolDatabase {
+    try {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+      if (!fs.existsSync(DB_FILE)) {
+        let seed: SchoolDatabase | null = memoryDbCache;
+        if (!seed && !options.dataDir) {
+          const bundledDbPath = path.resolve(process.cwd(), 'data', 'db.json');
+          if (fs.existsSync(bundledDbPath)) {
+            try {
+              seed = JSON.parse(fs.readFileSync(bundledDbPath, 'utf8')) as SchoolDatabase;
+            } catch {
+              seed = null;
+            }
+          }
+        }
+        if (!seed) {
+          seed = createInitialSeedDatabase();
+        }
+        seed = applyDefaultGasUrl(normalizeSchoolDatabase(seed));
+        memoryDbCache = seed;
+        fs.writeFileSync(DB_FILE, JSON.stringify(seed, null, 2), 'utf8');
+        return seed;
+      }
+      const raw = fs.readFileSync(DB_FILE, 'utf8');
+      const parsed = applyDefaultGasUrl(
+        normalizeSchoolDatabase(JSON.parse(raw) as Partial<SchoolDatabase>)
+      );
+      memoryDbCache = parsed;
+      return parsed;
+    } catch {
+      if (!memoryDbCache) {
+        memoryDbCache = applyDefaultGasUrl(normalizeSchoolDatabase(createInitialSeedDatabase()));
+      }
+      return memoryDbCache;
+    }
+  }
+
+  function writeDb(db: SchoolDatabase, markMutation = true): void {
+    const normalized = applyDefaultGasUrl(normalizeSchoolDatabase(db));
+    dbVersion = Math.max(Date.now(), dbVersion + 1);
+    if (markMutation) {
+      lastLocalMutationAt = Date.now();
+    }
+    memoryDbCache = normalized;
+    try {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+      const tmpFile = `${DB_FILE}.${process.pid}.${Math.random().toString(36).slice(2, 7)}.tmp`;
+      fs.writeFileSync(tmpFile, JSON.stringify(normalized, null, 2), 'utf8');
+      fs.renameSync(tmpFile, DB_FILE);
+    } catch {
+      // Keep memory cache active if disk storage is ephemeral/restricted
+    }
+  }
+
+  function issueSignedToken(user: Omit<User, 'password_hash' | 'password'>): string {
+    const payloadObj: SessionEntry = {
+      user,
+      expiresAt: Date.now() + 1000 * 60 * 60 * 12,
+    };
+    const payloadB64 = Buffer.from(JSON.stringify(payloadObj), 'utf8').toString('base64url');
+    const sig = crypto.createHmac('sha256', TOKEN_SECRET).update(payloadB64).digest('base64url');
+    return `${payloadB64}.${sig}`;
+  }
+
+  function verifySignedToken(token: string): SessionEntry | null {
+    if (!token || revokedTokens.has(token)) return null;
+    const parts = token.split('.');
+    if (parts.length !== 2) return null;
+    const [payloadB64, sig] = parts;
+    const expectedSig = crypto
+      .createHmac('sha256', TOKEN_SECRET)
+      .update(payloadB64)
+      .digest('base64url');
+    const sigBuf = Buffer.from(sig);
+    const expBuf = Buffer.from(expectedSig);
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as SessionEntry;
+      if (!parsed?.user || !parsed.expiresAt || Date.now() > parsed.expiresAt) {
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  function getAuthContext(
+    req: express.Request
+  ): { session: SessionEntry; token: string; source: 'bearer' | 'cookie' } | null {
+    const auth = req.headers.authorization;
+    if (auth && auth.startsWith('Bearer ')) {
+      const bearerToken = auth.slice(7).trim();
+      const session = verifySignedToken(bearerToken);
+      if (session) {
+        return { session, token: bearerToken, source: 'bearer' };
+      }
+    }
+
+    const cookies = parseCookies(req);
+    const cookieToken = cookies[SESSION_COOKIE_NAME];
+    if (cookieToken) {
+      if (!isCsrfSafeForCookieMutation(req)) {
+        return null;
+      }
+      const session = verifySignedToken(cookieToken);
+      if (session) {
+        return { session, token: cookieToken, source: 'cookie' };
+      }
+    }
+    return null;
+  }
+
+  function getAuthenticatedSession(req: express.Request): SessionEntry | null {
+    return getAuthContext(req)?.session ?? null;
+  }
+
+  async function defaultCallGasBridge(
+    gasUrl: string,
+    syncKey: string,
+    action: string,
+    payload: unknown = {}
+  ): Promise<{ ok: boolean; data?: any; school?: string; sheets?: number; error?: string }> {
+    const effectiveUrl = isAllowedGasUrl(gasUrl) ? gasUrl.trim() : readDefaultGasUrl();
+    if (!isAllowedGasUrl(effectiveUrl)) {
       return {
         ok: false,
-        error:
-          'Google Apps Script mengembalikan halaman HTML. Pastikan Deploy Web App menggunakan "Who has access: Anyone" dan versi deployment terbaru.',
+        error: 'URL Web App harus menggunakan alamat resmi https://script.google.com/macros/s/.../exec',
       };
     }
-    const json = JSON.parse(text);
-    return json;
-  } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message : 'Gagal menghubungi Google Apps Script.',
-    };
-  }
-}
-
-let gasSyncRunning: Promise<void> | null = null;
-let pendingGasSyncDb: SchoolDatabase | null = null;
-
-async function executeGasSyncOnce(db: SchoolDatabase): Promise<void> {
-  const url = isAllowedGasUrl(db.pengaturanSekolah.gas_webapp_url)
-    ? db.pengaturanSekolah.gas_webapp_url.trim()
-    : '';
-  if (!isAllowedGasUrl(url)) {
-    if (!db.pengaturanSekolah.google_spreadsheet_id?.trim()) {
-      syncStatus = {
-        ...syncStatus,
-        connected: false,
-        lastError: null,
-      };
-    }
-    return;
-  }
-  const syncKey = db.pengaturanSekolah.gas_sync_key || 'WASHLIYAH_SYNC_2026';
-  const res = await callGasBridge(url, syncKey, 'syncFullDb', db);
-  if (res.ok) {
-    syncStatus = {
-      connected: true,
-      lastSyncAt: new Date().toISOString(),
-      lastError: null,
-      schoolName: db.pengaturanSekolah.nama_sekolah,
-      syncedVersion: dbVersion,
-    };
-  } else {
-    syncStatus = {
-      ...syncStatus,
-      connected: false,
-      lastError: res.error || 'Gagal menyinkronkan ke Google Sheets.',
-    };
-  }
-}
-
-async function triggerAutoSyncToSheets(db: SchoolDatabase): Promise<void> {
-  const url = isAllowedGasUrl(db.pengaturanSekolah.gas_webapp_url)
-    ? db.pengaturanSekolah.gas_webapp_url.trim()
-    : '';
-  if (!isAllowedGasUrl(url)) {
-    if (!db.pengaturanSekolah.google_spreadsheet_id?.trim()) {
-      syncStatus = {
-        ...syncStatus,
-        connected: false,
-        lastError: null,
-      };
-    }
-    return;
-  }
-
-  pendingGasSyncDb = db;
-  if (gasSyncRunning) {
-    await gasSyncRunning;
-    return;
-  }
-
-  gasSyncRunning = (async () => {
     try {
-      while (pendingGasSyncDb) {
-        const nextSnapshot = pendingGasSyncDb;
-        pendingGasSyncDb = null;
-        await executeGasSyncOnce(nextSnapshot);
-      }
-    } finally {
-      gasSyncRunning = null;
-    }
-  })();
-
-  await gasSyncRunning;
-}
-
-let hydratedFromGas = false;
-let gasHydrationPromise: Promise<void> | null = null;
-
-async function ensureDbHydrated(): Promise<void> {
-  if (hydratedFromGas) return;
-  if (!IS_VERCEL || fs.existsSync(DB_FILE)) {
-    hydratedFromGas = true;
-    return;
-  }
-  const gasUrl = readDefaultGasUrl();
-  if (!isAllowedGasUrl(gasUrl)) {
-    hydratedFromGas = true;
-    return;
-  }
-  if (gasHydrationPromise) {
-    await gasHydrationPromise;
-    return;
-  }
-  gasHydrationPromise = (async () => {
-    try {
-      const current = readDb();
-      const syncKey =
-        process.env.GAS_SYNC_KEY?.trim() ||
-        current.pengaturanSekolah.gas_sync_key ||
-        'WASHLIYAH_SYNC_2026';
-      const pulled = await callGasBridge(gasUrl, syncKey, 'pullFullDb');
-      if (pulled.ok && pulled.data && Array.isArray(pulled.data.users)) {
-        const merged: SchoolDatabase = {
-          ...current,
-          ...pulled.data,
-          pengaturanSekolah: {
-            ...current.pengaturanSekolah,
-            ...(pulled.data.pengaturanSekolah || {}),
-            gas_webapp_url: gasUrl,
-            gas_sync_key: syncKey,
-            admin_claimed:
-              isAdminClaimed(current) ||
-              Boolean(pulled.data.pengaturanSekolah?.admin_claimed) ||
-              pulled.data.users.some((u: User) => u.role === 'Admin'),
-          },
+      const controller = new AbortController();
+      const timeoutMs = action === 'syncFullDb' || action === 'pullFullDb' ? 25000 : 8000;
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const res = await fetch(effectiveUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({
+          action,
+          syncKey: syncKey || 'WASHLIYAH_SYNC_2026',
+          payload,
+        }),
+        redirect: 'follow',
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      const text = await res.text();
+      if (text.trim().startsWith('<')) {
+        return {
+          ok: false,
+          error:
+            'Google Apps Script mengembalikan halaman HTML. Pastikan Deploy Web App menggunakan "Who has access: Anyone" dan versi deployment terbaru.',
         };
-        writeDb(merged);
       }
-    } catch {
-      // Fall back to bundled db.json if GAS is unreachable
-    } finally {
-      hydratedFromGas = true;
-      gasHydrationPromise = null;
+      return JSON.parse(text);
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : 'Gagal menghubungi Google Apps Script.',
+      };
     }
-  })();
-  await gasHydrationPromise;
-}
+  }
 
-export function createApiApp(): express.Express {
+  const callGasBridge = options.gasBridgeFn || defaultCallGasBridge;
+
+  async function executeGasSyncOnce(db: SchoolDatabase): Promise<void> {
+    const rawUrl = db.pengaturanSekolah.gas_webapp_url;
+    const url = isAllowedGasUrl(rawUrl) ? rawUrl.trim() : '';
+    if (!isAllowedGasUrl(url)) {
+      if (!db.pengaturanSekolah.google_spreadsheet_id?.trim()) {
+        syncStatus = {
+          ...syncStatus,
+          connected: false,
+          lastError: null,
+        };
+      }
+      return;
+    }
+    const syncKey = db.pengaturanSekolah.gas_sync_key || 'WASHLIYAH_SYNC_2026';
+    const res = await callGasBridge(url, syncKey, 'syncFullDb', db);
+    if (res.ok) {
+      lastGasHydrateAt = Date.now();
+      syncStatus = {
+        connected: true,
+        lastSyncAt: new Date().toISOString(),
+        lastError: null,
+        schoolName: db.pengaturanSekolah.nama_sekolah,
+        syncedVersion: dbVersion,
+      };
+    } else {
+      syncStatus = {
+        ...syncStatus,
+        connected: false,
+        lastError: res.error || 'Gagal menyinkronkan ke Google Sheets.',
+      };
+    }
+  }
+
+  async function triggerAutoSyncToSheets(db: SchoolDatabase): Promise<void> {
+    const url = isAllowedGasUrl(db.pengaturanSekolah.gas_webapp_url)
+      ? db.pengaturanSekolah.gas_webapp_url.trim()
+      : '';
+    if (!isAllowedGasUrl(url)) {
+      if (!db.pengaturanSekolah.google_spreadsheet_id?.trim()) {
+        syncStatus = {
+          ...syncStatus,
+          connected: false,
+          lastError: null,
+        };
+      }
+      return;
+    }
+
+    pendingGasSyncDb = db;
+    if (gasSyncRunning) {
+      await gasSyncRunning;
+      return;
+    }
+
+    gasSyncRunning = (async () => {
+      try {
+        while (pendingGasSyncDb) {
+          const nextSnapshot = pendingGasSyncDb;
+          pendingGasSyncDb = null;
+          await executeGasSyncOnce(nextSnapshot);
+        }
+      } finally {
+        gasSyncRunning = null;
+      }
+    })();
+
+    await gasSyncRunning;
+  }
+
+  async function ensureDbHydrated(forceRefresh = false): Promise<void> {
+    const current = readDb();
+    const gasUrl =
+      (isAllowedGasUrl(current.pengaturanSekolah.gas_webapp_url)
+        ? current.pengaturanSekolah.gas_webapp_url.trim()
+        : '') || readDefaultGasUrl();
+
+    if (!isAllowedGasUrl(gasUrl)) {
+      return;
+    }
+
+    const now = Date.now();
+    const minInterval = forceRefresh ? FORCE_HYDRATE_MIN_INTERVAL_MS : HYDRATE_TTL_MS;
+    if (lastGasHydrateAt > 0 && now - lastGasHydrateAt < minInterval) {
+      return;
+    }
+
+    if (gasHydrationPromise) {
+      await gasHydrationPromise;
+      return;
+    }
+
+    const requestStartedAt = Date.now();
+    gasHydrationPromise = (async () => {
+      try {
+        const latestLocal = readDb();
+        const syncKey =
+          process.env.GAS_SYNC_KEY?.trim() ||
+          latestLocal.pengaturanSekolah.gas_sync_key ||
+          'WASHLIYAH_SYNC_2026';
+        const pulled = await callGasBridge(gasUrl, syncKey, 'pullFullDb');
+        // Never overwrite a newer local mutation with an older pull response
+        if (lastLocalMutationAt > requestStartedAt) {
+          lastGasHydrateAt = Date.now();
+          return;
+        }
+        if (pulled.ok && pulled.data && Array.isArray(pulled.data.users)) {
+          const mergeRes = mergePulledGasDatabase(latestLocal, pulled.data, {
+            gasUrl,
+            syncKey,
+          });
+          if (mergeRes.adoptedRemote) {
+            writeDb(mergeRes.db, false);
+          } else if (
+            mergeRes.db.pengaturanSekolah.gas_webapp_url !==
+            latestLocal.pengaturanSekolah.gas_webapp_url
+          ) {
+            writeDb(mergeRes.db, false);
+          }
+          syncStatus = {
+            ...syncStatus,
+            connected: true,
+            lastSyncAt: syncStatus.lastSyncAt || new Date().toISOString(),
+            lastError: null,
+            schoolName: mergeRes.db.pengaturanSekolah.nama_sekolah,
+          };
+          lastGasHydrateAt = Date.now();
+          if (mergeRes.shouldBootstrapRemote) {
+            void triggerAutoSyncToSheets(mergeRes.db);
+          }
+        }
+      } catch {
+        // Fall back to local/bundled db.json if GAS is temporarily unreachable
+      } finally {
+        gasHydrationPromise = null;
+      }
+    })();
+
+    await gasHydrationPromise;
+  }
+
   const app = express();
+  app.set('trust proxy', true);
   app.use(express.json({ limit: '15mb' }));
 
   app.get('/api/health', (_req, res) => {
@@ -469,14 +641,25 @@ export function createApiApp(): express.Express {
   });
 
   // Public school identity (never expose sync keys or user hashes)
-  app.get('/api/school-info', async (_req, res) => {
-    await ensureDbHydrated();
+  app.get('/api/school-info', async (req, res) => {
+    const preDb = readDb();
+    if (!isAdminClaimedDb(preDb)) {
+      await ensureDbHydrated();
+    } else {
+      void ensureDbHydrated();
+    }
     const db = readDb();
+    const authCtx = getAuthContext(req);
+    const liveUser = authCtx
+      ? db.users.find((u) => u.user_id === authCtx.session.user.user_id)
+      : null;
+    const authenticated = Boolean(liveUser && isUserActive(liveUser));
     const { gas_sync_key: _hidden, ...publicCfg } = db.pengaturanSekolah;
     res.json({
       ok: true,
+      authenticated,
       pengaturanSekolah: publicCfg,
-      adminClaimed: isAdminClaimed(db),
+      adminClaimed: isAdminClaimedDb(db),
       sheetsConfigured:
         isAllowedGasUrl(db.pengaturanSekolah.gas_webapp_url) ||
         Boolean(db.pengaturanSekolah.google_spreadsheet_id?.trim()),
@@ -486,10 +669,22 @@ export function createApiApp(): express.Express {
   });
 
   app.get('/api/sync-status', async (req, res) => {
-    await ensureDbHydrated();
+    const preDb = readDb();
+    if (!isAdminClaimedDb(preDb)) {
+      await ensureDbHydrated();
+    } else {
+      void ensureDbHydrated();
+    }
     const session = getAuthenticatedSession(req);
     if (!session) {
       res.status(401).json({ ok: false, error: 'Silakan masuk terlebih dahulu.' });
+      return;
+    }
+    const db = readDb();
+    const liveUser = db.users.find((u) => u.user_id === session.user.user_id);
+    if (!liveUser || !isUserActive(liveUser)) {
+      clearSessionCookie(req, res);
+      res.status(401).json({ ok: false, error: 'Akun tidak aktif atau telah dihapus.' });
       return;
     }
     res.json({
@@ -501,7 +696,7 @@ export function createApiApp(): express.Express {
 
   // One-time initial Admin registration (locked permanently after first Admin is registered)
   app.post('/api/setup-admin', async (req, res) => {
-    await ensureDbHydrated();
+    await ensureDbHydrated(true);
     const { username, password, nama_lengkap, no_hp } = (req.body || {}) as {
       username?: string;
       password?: string;
@@ -509,7 +704,7 @@ export function createApiApp(): express.Express {
       no_hp?: string;
     };
 
-    const cleanUser = normalizeUsername(username);
+    const cleanUser = normalizeUsernameStr(username);
     const cleanNama = String(nama_lengkap || '').trim();
     const cleanPass = String(password || '').replace(/[\r\n]+/g, '');
 
@@ -531,10 +726,13 @@ export function createApiApp(): express.Express {
 
     const outcome = await enqueueDbMutation(async () => {
       const db = readDb();
-      if (isAdminClaimed(db)) {
-        return { status: 403 as const, error: 'Akun Admin sekolah sudah terdaftar. Pendaftaran Admin hanya dapat dilakukan satu kali.' };
+      if (isAdminClaimedDb(db)) {
+        return {
+          status: 403 as const,
+          error: 'Akun Admin sekolah sudah terdaftar. Pendaftaran Admin hanya dapat dilakukan satu kali.',
+        };
       }
-      if (db.users.some((u) => normalizeUsername(u.username) === cleanUser)) {
+      if (db.users.some((u) => normalizeUsernameStr(u.username) === cleanUser)) {
         return { status: 409 as const, error: 'Username sudah dipakai akun lain, pilih username lain.' };
       }
 
@@ -571,10 +769,11 @@ export function createApiApp(): express.Express {
     });
 
     if (outcome.status !== 200) {
-      res.status(outcome.status).json({ ok: false, error: outcome.error });
+      res.status(outcome.status).json({ ok: false, adminClaimed: outcome.status === 403, error: outcome.error });
       return;
     }
 
+    setSessionCookie(req, res, outcome.token);
     res.json({
       ok: true,
       token: outcome.token,
@@ -616,7 +815,7 @@ export function createApiApp(): express.Express {
       return;
     }
 
-    const cleanUser = normalizeUsername(username);
+    const cleanUser = normalizeUsernameStr(username);
     const cleanNama = String(nama_lengkap || '').trim();
     const cleanPass = String(password || '').replace(/[\r\n]+/g, '');
 
@@ -638,7 +837,7 @@ export function createApiApp(): express.Express {
 
     const outcome = await enqueueDbMutation(async () => {
       const db = readDb();
-      if (db.users.some((u) => normalizeUsername(u.username) === cleanUser)) {
+      if (db.users.some((u) => normalizeUsernameStr(u.username) === cleanUser)) {
         return { conflict: true as const };
       }
 
@@ -730,16 +929,29 @@ export function createApiApp(): express.Express {
   });
 
   app.post('/api/login', async (req, res) => {
-    await ensureDbHydrated();
     const { username, password } = (req.body || {}) as { username?: string; password?: string };
     if (!username || !password) {
       res.status(400).json({ ok: false, error: 'Username dan password wajib diisi.' });
       return;
     }
-    const db = readDb();
-    const claimed = isAdminClaimed(db);
-    const cleanUser = normalizeUsername(username);
-    const matchingByUsername = db.users.filter((u) => normalizeUsername(u.username) === cleanUser);
+    const cleanUser = normalizeUsernameStr(username);
+
+    let db = readDb();
+    const localMatch = db.users.find(
+      (u) =>
+        normalizeUsernameStr(u.username) === cleanUser &&
+        isUserActive(u) &&
+        verifyPasswordFlexible(password, u.password_hash)
+    );
+    if (!localMatch) {
+      await ensureDbHydrated(true);
+      db = readDb();
+    } else {
+      void ensureDbHydrated();
+    }
+
+    const claimed = isAdminClaimedDb(db);
+    const matchingByUsername = db.users.filter((u) => normalizeUsernameStr(u.username) === cleanUser);
 
     if (matchingByUsername.length === 0) {
       const vercelEphemeralReset =
@@ -794,6 +1006,7 @@ export function createApiApp(): express.Express {
       status_aktif: isUserActive(user),
     };
     const token = issueSignedToken(safeUser);
+    setSessionCookie(req, res, token);
 
     res.json({
       ok: true,
@@ -811,15 +1024,21 @@ export function createApiApp(): express.Express {
     if (auth && auth.startsWith('Bearer ')) {
       revokedTokens.add(auth.slice(7).trim());
     }
+    const cookies = parseCookies(req);
+    if (cookies[SESSION_COOKIE_NAME]) {
+      revokedTokens.add(cookies[SESSION_COOKIE_NAME]);
+    }
+    clearSessionCookie(req, res);
     res.json({ ok: true });
   });
 
   app.post('/api/change-password', async (req, res) => {
-    const session = getAuthenticatedSession(req);
-    if (!session) {
+    const authCtx = getAuthContext(req);
+    if (!authCtx) {
       res.status(401).json({ ok: false, error: 'Silakan masuk terlebih dahulu.' });
       return;
     }
+    const session = authCtx.session;
     const { lama, baru } = (req.body || {}) as { lama?: string; baru?: string };
     const cleanBaru = String(baru || '').replace(/[\r\n]+/g, '');
     if (!lama || cleanBaru.length < 6) {
@@ -847,26 +1066,46 @@ export function createApiApp(): express.Express {
       return;
     }
 
-    const oldAuth = req.headers.authorization;
-    if (oldAuth && oldAuth.startsWith('Bearer ')) {
-      revokedTokens.add(oldAuth.slice(7).trim());
-    }
+    revokedTokens.add(authCtx.token);
     const newToken = issueSignedToken(session.user);
+    setSessionCookie(req, res, newToken);
     res.json({ ok: true, token: newToken });
   });
 
   app.get('/api/db', async (req, res) => {
-    await ensureDbHydrated();
-    const session = getAuthenticatedSession(req);
-    if (!session) {
+    const preDb = readDb();
+    if (!isAdminClaimedDb(preDb)) {
+      await ensureDbHydrated();
+    } else {
+      void ensureDbHydrated();
+    }
+    const authCtx = getAuthContext(req);
+    if (!authCtx) {
       res.status(401).json({ ok: false, error: 'Silakan masuk terlebih dahulu.' });
       return;
     }
     const db = readDb();
+    const liveUser = db.users.find((u) => u.user_id === authCtx.session.user.user_id);
+    if (!liveUser || !isUserActive(liveUser)) {
+      clearSessionCookie(req, res);
+      res.status(401).json({ ok: false, error: 'Akun tidak aktif atau telah dihapus.' });
+      return;
+    }
+    const safeUser: Omit<User, 'password_hash' | 'password'> = {
+      user_id: liveUser.user_id,
+      username: liveUser.username,
+      role: liveUser.role,
+      nama_lengkap: liveUser.nama_lengkap,
+      no_hp: liveUser.no_hp,
+      kelas_ampu: liveUser.kelas_ampu,
+      status_aktif: isUserActive(liveUser),
+    };
     res.json({
       ok: true,
-      user: session.user,
-      data: sanitizeDbForRole(db, session.user.role),
+      token: authCtx.token,
+      user: safeUser,
+      adminClaimed: isAdminClaimedDb(db),
+      data: sanitizeDbForRole(db, liveUser.role),
       dbVersion,
       syncStatus,
     });
@@ -899,7 +1138,7 @@ export function createApiApp(): express.Express {
       if (isAdmin && Array.isArray(incoming.users)) {
         const mappedUsers = incoming.users.map((u) => {
           const existing = currentUserMap.get(u.user_id);
-          const cleanUname = normalizeUsername(u.username) || existing?.username || '';
+          const cleanUname = normalizeUsernameStr(u.username) || existing?.username || '';
           const rawPw = typeof u.password === 'string' ? u.password.replace(/[\r\n]+/g, '') : '';
           if (existing?.role === 'Admin') {
             const { password: _pw, ...rest } = u;
@@ -908,10 +1147,7 @@ export function createApiApp(): express.Express {
               username: cleanUname,
               role: 'Admin' as const,
               status_aktif: true,
-              password_hash:
-                rawPw.trim()
-                  ? hashPasswordScrypt(rawPw)
-                  : existing.password_hash,
+              password_hash: rawPw.trim() ? hashPasswordScrypt(rawPw) : existing.password_hash,
             };
           }
           const safeRole: UserRole = u.role === 'Guru' ? 'Guru' : 'OrangTua';
@@ -960,7 +1196,7 @@ export function createApiApp(): express.Express {
           ? incomingGasRaw
           : currentDb.pengaturanSekolah.gas_webapp_url || '';
 
-      let mergedDb: SchoolDatabase = {
+      let mergedDb: SchoolDatabase = normalizeSchoolDatabase({
         ...currentDb,
         ...(isAdmin ? incoming : {}),
         ...(isGuru
@@ -989,12 +1225,12 @@ export function createApiApp(): express.Express {
               ...incoming.pengaturanSekolah,
               gas_webapp_url: resolvedGasUrl,
               admin_claimed:
-                isAdminClaimed(currentDb) || Boolean(incoming.pengaturanSekolah.admin_claimed),
+                isAdminClaimedDb(currentDb) || Boolean(incoming.pengaturanSekolah.admin_claimed),
             }
           : currentDb.pengaturanSekolah,
         users: nextUsers,
         siswa: nextSiswa,
-      };
+      });
 
       const approvedPurgeIds = new Set<string>();
       if (isAdmin) {
@@ -1139,7 +1375,7 @@ export function createApiApp(): express.Express {
             };
           })
         : currentDb.users;
-      effectiveDb = {
+      effectiveDb = normalizeSchoolDatabase({
         ...currentDb,
         ...dbSnapshot,
         users: mergedUsers,
@@ -1147,9 +1383,9 @@ export function createApiApp(): express.Express {
           ...currentDb.pengaturanSekolah,
           ...dbSnapshot.pengaturanSekolah,
           admin_claimed:
-            isAdminClaimed(currentDb) || Boolean(dbSnapshot.pengaturanSekolah.admin_claimed),
+            isAdminClaimedDb(currentDb) || Boolean(dbSnapshot.pengaturanSekolah.admin_claimed),
         },
-      };
+      });
     }
 
     const targetUrl =
@@ -1170,6 +1406,7 @@ export function createApiApp(): express.Express {
 
     const result = await callGasBridge(targetUrl, targetKey, 'syncFullDb', effectiveDb);
     if (result.ok) {
+      lastGasHydrateAt = Date.now();
       syncStatus = {
         connected: true,
         lastSyncAt: new Date().toISOString(),
@@ -1195,55 +1432,31 @@ export function createApiApp(): express.Express {
     }
     const { url, syncKey } = (req.body || {}) as { url?: string; syncKey?: string };
     const db = readDb();
-    const targetUrl = db.pengaturanSekolah.gas_webapp_url || url || '';
+    const targetUrl =
+      (isAllowedGasUrl(url) ? url!.trim() : '') ||
+      db.pengaturanSekolah.gas_webapp_url ||
+      readDefaultGasUrl();
     const targetKey = db.pengaturanSekolah.gas_sync_key || syncKey || 'WASHLIYAH_SYNC_2026';
     const result = await callGasBridge(targetUrl, targetKey, 'pullFullDb');
     if (!result.ok || !result.data) {
       res.status(400).json({ ok: false, error: result.error || 'Gagal menarik data dari Google Sheets.' });
       return;
     }
-    const existingById = new Map(db.users.map((u) => [u.user_id, u]));
-    const existingByName = new Map(db.users.map((u) => [normalizeUsername(u.username), u]));
-    const pulledUsers: User[] = Array.isArray(result.data.users)
-      ? result.data.users.map((u: User) => {
-          const uname = normalizeUsername(u.username);
-          const prev = existingById.get(u.user_id) || existingByName.get(uname);
-          return {
-            ...u,
-            username: uname || u.username,
-            password_hash: u.password_hash || prev?.password_hash || '',
-          };
-        })
-      : db.users;
-    const currentAdmins = db.users.filter((u) => u.role === 'Admin');
-    const mergedUsers = [...pulledUsers];
-    for (const adm of currentAdmins) {
-      if (!mergedUsers.some((u) => u.user_id === adm.user_id || u.role === 'Admin')) {
-        mergedUsers.unshift(adm);
-      }
-    }
 
-    const merged: SchoolDatabase = {
-      ...db,
-      ...result.data,
-      users: mergedUsers,
-      pengaturanSekolah: {
-        ...db.pengaturanSekolah,
-        ...(result.data.pengaturanSekolah || {}),
-        gas_webapp_url: targetUrl,
-        gas_sync_key: targetKey,
-        admin_claimed:
-          isAdminClaimed(db) || Boolean(result.data.pengaturanSekolah?.admin_claimed),
-      },
-    };
-    writeDb(merged);
+    const mergedRes = mergePulledGasDatabase(db, result.data, {
+      gasUrl: targetUrl,
+      syncKey: targetKey,
+      forceRemote: true,
+    });
+    writeDb(mergedRes.db);
+    lastGasHydrateAt = Date.now();
     syncStatus = {
       connected: true,
       lastSyncAt: new Date().toISOString(),
       lastError: null,
-      schoolName: merged.pengaturanSekolah.nama_sekolah,
+      schoolName: mergedRes.db.pengaturanSekolah.nama_sekolah,
     };
-    res.json({ ok: true, data: merged, syncStatus });
+    res.json({ ok: true, data: mergedRes.db, syncStatus });
   });
 
   return app;

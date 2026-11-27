@@ -8,7 +8,7 @@
     "tahun_ajaran_aktif": "2026/2027",
     "semester_aktif": "Semester 1",
     "folder_drive_id": "11VSF8-JjJZnKsov5K4_tzoy96iE7w8iE",
-    "gas_webapp_url": "https://script.google.com/macros/s/AKfycbx7YdlltbMU1AYi1wKghGf1fGL5g4HU2dZqB2dhJri0w36UuT3mgp43ivXTIA51niJn2g/exec",
+    "gas_webapp_url": "https://script.google.com/macros/s/AKfycbx2HC2xd6tkkFECD7KAEe7fZAdFJG96YGAeyqOwPS20SyQzMcY-6QUFPELFP0aYcVqqPQ/exec",
     "admin_claimed": true,
     "google_spreadsheet_id": "",
     "google_spreadsheet_url": "",
@@ -19,7 +19,7 @@
     {
       "user_id": "USR-ADM-62718",
       "username": "tkitaw",
-      "password_hash": "scrypt$fa9995f31b23a9bb05f0513d3edfa1d7$a5668ce70a39f43bb14fa228acef0a21a95d32abd4b303caf6e07c5dba3e8752b637ecbc49699772efc88dde75fe45dd9dc29bc8bdd9e95186968929f85eb820",
+      "password_hash": "scrypt$dbab04631f7cdb66ab219627bceb753f$2516c127ddc683e05aa97f7d0531f1376c1c1e9d398624bcbcf47e384e68e9eb06b52b6510da7be2862ac3f83448702ade9adcf7e000fe597e4648db4ea5694d",
       "role": "Admin",
       "nama_lengkap": "Obi Abdulah Sapari",
       "no_hp": "",
@@ -506,7 +506,7 @@
   "siswa": [
     {
       "siswa_id": "SIS-29539-24",
-      "nis": 2627001,
+      "nis": "2627001",
       "nama_anak": "ABBIYU YEN MUZZAKI",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2021-04-09",
@@ -521,7 +521,7 @@
     },
     {
       "siswa_id": "SIS-29556-60",
-      "nis": 2627023,
+      "nis": "2627023",
       "nama_anak": "Adrian Syaputra",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2020-03-20",
@@ -536,7 +536,7 @@
     },
     {
       "siswa_id": "SIS-29573-80",
-      "nis": 2627002,
+      "nis": "2627002",
       "nama_anak": "Afiza Ghania",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2022-04-29",
@@ -551,7 +551,7 @@
     },
     {
       "siswa_id": "SIS-29590-75",
-      "nis": 2627024,
+      "nis": "2627024",
       "nama_anak": "Al Khwarizmi Bunayya Amartha",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2021-02-11",
@@ -566,7 +566,7 @@
     },
     {
       "siswa_id": "SIS-29607-25",
-      "nis": 2627003,
+      "nis": "2627003",
       "nama_anak": "Amaradhiva Shafa Arsyila",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2022-02-19",
@@ -581,7 +581,7 @@
     },
     {
       "siswa_id": "SIS-29624-95",
-      "nis": 2526038,
+      "nis": "2526038",
       "nama_anak": "Amelia Saputri Dewi",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2020-11-26",
@@ -596,7 +596,7 @@
     },
     {
       "siswa_id": "SIS-29641-59",
-      "nis": 2526019,
+      "nis": "2526019",
       "nama_anak": "Arfadhia Keanu Febrian",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2020-11-25",
@@ -611,7 +611,7 @@
     },
     {
       "siswa_id": "SIS-29658-53",
-      "nis": 2627004,
+      "nis": "2627004",
       "nama_anak": "Arkyla Ratu Almahyra",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2022-02-16",
@@ -626,7 +626,7 @@
     },
     {
       "siswa_id": "SIS-29675-59",
-      "nis": 2627005,
+      "nis": "2627005",
       "nama_anak": "Aroyan Dilan Alfarizqi Ali",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2019-11-05",
@@ -641,7 +641,7 @@
     },
     {
       "siswa_id": "SIS-29692-68",
-      "nis": 2627006,
+      "nis": "2627006",
       "nama_anak": "Arsy Sekar Kemuning",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2022-06-25",
@@ -656,7 +656,7 @@
     },
     {
       "siswa_id": "SIS-29709-84",
-      "nis": 2627007,
+      "nis": "2627007",
       "nama_anak": "Arsya Radeya Jauhari",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2020-10-01",
@@ -671,7 +671,7 @@
     },
     {
       "siswa_id": "SIS-29726-95",
-      "nis": 2526030,
+      "nis": "2526030",
       "nama_anak": "Arsyla Andara Shovia",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2020-03-20",
@@ -686,7 +686,7 @@
     },
     {
       "siswa_id": "SIS-29743-40",
-      "nis": 2526022,
+      "nis": "2526022",
       "nama_anak": "Arumi Kamilatunissa Firmansyah",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2021-01-10",
@@ -701,7 +701,7 @@
     },
     {
       "siswa_id": "SIS-29760-88",
-      "nis": 2627009,
+      "nis": "2627009",
       "nama_anak": "Azqiya Hafidzah",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2022-01-10",
@@ -716,7 +716,7 @@
     },
     {
       "siswa_id": "SIS-29777-15",
-      "nis": 2627010,
+      "nis": "2627010",
       "nama_anak": "BHERYL ZHAFRAN SYAMIL",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2020-07-08",
@@ -731,7 +731,7 @@
     },
     {
       "siswa_id": "SIS-29794-83",
-      "nis": 2627011,
+      "nis": "2627011",
       "nama_anak": "DAVID FRANS GULTOM",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2021-03-08",
@@ -746,7 +746,7 @@
     },
     {
       "siswa_id": "SIS-29811-50",
-      "nis": 2526002,
+      "nis": "2526002",
       "nama_anak": "Ghaitsan Muhammad Altamis",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2021-03-02",
@@ -761,7 +761,7 @@
     },
     {
       "siswa_id": "SIS-29828-46",
-      "nis": 2526010,
+      "nis": "2526010",
       "nama_anak": "Jasmine Annayla Sidqia",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2020-11-03",
@@ -776,7 +776,7 @@
     },
     {
       "siswa_id": "SIS-29845-95",
-      "nis": 2526023,
+      "nis": "2526023",
       "nama_anak": "Kenzie Arfa Arrahmat",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2020-12-28",
@@ -791,7 +791,7 @@
     },
     {
       "siswa_id": "SIS-29862-31",
-      "nis": 2627013,
+      "nis": "2627013",
       "nama_anak": "Kiandra Arya Nugraha",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2020-09-27",
@@ -806,7 +806,7 @@
     },
     {
       "siswa_id": "SIS-29879-33",
-      "nis": 2526013,
+      "nis": "2526013",
       "nama_anak": "Kirana Naeswari Andrian",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2020-08-01",
@@ -821,7 +821,7 @@
     },
     {
       "siswa_id": "SIS-29896-13",
-      "nis": 2526015,
+      "nis": "2526015",
       "nama_anak": "Muhamad Zhian Atthallah",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2021-01-05",
@@ -836,7 +836,7 @@
     },
     {
       "siswa_id": "SIS-29913-45",
-      "nis": 2526025,
+      "nis": "2526025",
       "nama_anak": "Muhammad Abizar Assudais",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2020-07-27",
@@ -851,7 +851,7 @@
     },
     {
       "siswa_id": "SIS-29930-58",
-      "nis": 2526037,
+      "nis": "2526037",
       "nama_anak": "Muhammad Abrisam Marzouq Akram",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2021-09-23",
@@ -866,7 +866,7 @@
     },
     {
       "siswa_id": "SIS-29947-47",
-      "nis": 2627014,
+      "nis": "2627014",
       "nama_anak": "Muhammad Alfatih Ibnu Farhan",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2021-06-13",
@@ -881,7 +881,7 @@
     },
     {
       "siswa_id": "SIS-29964-87",
-      "nis": 2627015,
+      "nis": "2627015",
       "nama_anak": "Muhammad Alphard Al Farizi",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2021-09-14",
@@ -896,7 +896,7 @@
     },
     {
       "siswa_id": "SIS-29981-10",
-      "nis": 2526035,
+      "nis": "2526035",
       "nama_anak": "Muhammad Azriel Maulana",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2020-11-24",
@@ -911,7 +911,7 @@
     },
     {
       "siswa_id": "SIS-29998-69",
-      "nis": 2627016,
+      "nis": "2627016",
       "nama_anak": "Muhammad Nazril Alfarizi",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2020-10-04",
@@ -926,7 +926,7 @@
     },
     {
       "siswa_id": "SIS-30015-74",
-      "nis": 2526017,
+      "nis": "2526017",
       "nama_anak": "Muhammad Razka Al Fatih Hermawan",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2021-02-26",
@@ -941,7 +941,7 @@
     },
     {
       "siswa_id": "SIS-30032-31",
-      "nis": 2526020,
+      "nis": "2526020",
       "nama_anak": "Muhammad Shabir Alfath",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2020-04-29",
@@ -956,7 +956,7 @@
     },
     {
       "siswa_id": "SIS-30049-70",
-      "nis": 2627017,
+      "nis": "2627017",
       "nama_anak": "Nabila Putri Utami",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2021-02-22",
@@ -971,7 +971,7 @@
     },
     {
       "siswa_id": "SIS-30066-96",
-      "nis": 2526024,
+      "nis": "2526024",
       "nama_anak": "Naira Zulaikha Azzahra",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2020-09-09",
@@ -986,7 +986,7 @@
     },
     {
       "siswa_id": "SIS-30083-83",
-      "nis": 2627018,
+      "nis": "2627018",
       "nama_anak": "Nazeera Bella Zara",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2022-01-26",
@@ -1001,7 +1001,7 @@
     },
     {
       "siswa_id": "SIS-30100-88",
-      "nis": 2526014,
+      "nis": "2526014",
       "nama_anak": "Rachila Alea Fathiyah",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2020-08-25",
@@ -1016,7 +1016,7 @@
     },
     {
       "siswa_id": "SIS-30117-63",
-      "nis": 2526036,
+      "nis": "2526036",
       "nama_anak": "Radeva Alfarizqi",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2022-02-22",
@@ -1031,7 +1031,7 @@
     },
     {
       "siswa_id": "SIS-30134-69",
-      "nis": 2526026,
+      "nis": "2526026",
       "nama_anak": "Rahma Aleesha",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2020-05-06",
@@ -1046,7 +1046,7 @@
     },
     {
       "siswa_id": "SIS-30151-69",
-      "nis": 24250020,
+      "nis": "24250020",
       "nama_anak": "Raka Arkanza Djibril",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2019-12-14",
@@ -1061,7 +1061,7 @@
     },
     {
       "siswa_id": "SIS-30168-72",
-      "nis": 2627019,
+      "nis": "2627019",
       "nama_anak": "Rasty Amanda Putri",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2020-03-02",
@@ -1076,7 +1076,7 @@
     },
     {
       "siswa_id": "SIS-30185-23",
-      "nis": 2627020,
+      "nis": "2627020",
       "nama_anak": "Ridwan Sudrajat",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2021-07-10",
@@ -1091,7 +1091,7 @@
     },
     {
       "siswa_id": "SIS-30202-69",
-      "nis": 2627025,
+      "nis": "2627025",
       "nama_anak": "Sayyid Ali Abdullah",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2021-02-10",
@@ -1106,7 +1106,7 @@
     },
     {
       "siswa_id": "SIS-30219-87",
-      "nis": 2627021,
+      "nis": "2627021",
       "nama_anak": "Shaqueena Humaira",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2021-01-12",
@@ -1121,7 +1121,7 @@
     },
     {
       "siswa_id": "SIS-30236-77",
-      "nis": 2627022,
+      "nis": "2627022",
       "nama_anak": "Syakil Afwan Gavin",
       "jenis_kelamin": "L",
       "tanggal_lahir": "2021-03-09",
@@ -1136,7 +1136,7 @@
     },
     {
       "siswa_id": "SIS-30253-43",
-      "nis": 2526021,
+      "nis": "2526021",
       "nama_anak": "Tineu Karmil",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2021-06-11",
@@ -1151,7 +1151,7 @@
     },
     {
       "siswa_id": "SIS-30270-27",
-      "nis": 2526016,
+      "nis": "2526016",
       "nama_anak": "Tsabina Lakshita Naureen",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2021-02-15",
@@ -1166,7 +1166,7 @@
     },
     {
       "siswa_id": "SIS-30287-98",
-      "nis": 2526012,
+      "nis": "2526012",
       "nama_anak": "Zaskiya Shabira Alfauziyah",
       "jenis_kelamin": "P",
       "tanggal_lahir": "2020-03-11",

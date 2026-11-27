@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   CheckSquare,
+  Copy,
   Download,
   FileSpreadsheet,
   Square,
@@ -10,7 +11,7 @@ import {
   X,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { RiwayatKelas, Siswa } from '../../types';
+import { RiwayatKelas, Siswa, User } from '../../types';
 import {
   DapodikParseResult,
   MAX_DAPODIK_FILE_BYTES,
@@ -19,6 +20,10 @@ import {
   parseDapodikExcelBuffer,
 } from '../../utils/dapodikImport';
 import { getMasterKelasList } from '../../utils/kelas';
+import {
+  AutoParentCredentials,
+  createStudentWithOptionalAutoParent,
+} from '../../utils/parentAccountAuto';
 
 interface DapodikImportModalProps {
   onClose: () => void;
@@ -41,11 +46,15 @@ export const DapodikImportModal: React.FC<DapodikImportModalProps> = ({ onClose 
   const [defaultKelas, setDefaultKelas] = useState<string>(
     () => kelasList[0]?.nama_kelas || 'Kelas A'
   );
+  const [autoCreateParents, setAutoCreateParents] = useState<boolean>(true);
+  const [defaultParentPassword, setDefaultParentPassword] = useState<string>('123456');
   const [importing, setImporting] = useState<boolean>(false);
+  const [importedCredentials, setImportedCredentials] = useState<AutoParentCredentials[] | null>(null);
 
   const handleFileSelected = async (file?: File) => {
     if (!file) return;
     setParseError('');
+    setImportedCredentials(null);
 
     const extOk = /\.(xlsx|xls|csv)$/i.test(file.name);
     if (!extOk) {
@@ -110,16 +119,42 @@ export const DapodikImportModal: React.FC<DapodikImportModalProps> = ({ onClose 
     addToast(`Semua baris diarahkan ke ${defaultKelas}.`, 'info');
   };
 
+  const handleCopyAllCreds = async () => {
+    if (!importedCredentials || importedCredentials.length === 0) return;
+    const text = importedCredentials
+      .map(
+        (c, i) =>
+          `${i + 1}. ${c.nama_anak} (NIS ${c.nis}) -> Wali: ${c.nama_lengkap} | Username: ${c.username} | Password: ${c.password}`
+      )
+      .join('\n');
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        addToast('Daftar akun orang tua disalin ke clipboard.', 'success');
+      } else {
+        addToast(`${importedCredentials.length} akun orang tua siap dibagikan.`, 'info');
+      }
+    } catch {
+      addToast(`${importedCredentials.length} akun orang tua siap dibagikan.`, 'info');
+    }
+  };
+
   const handleConfirmImport = async () => {
     if (includedRows.length === 0) {
       addToast('Tidak ada data murid baru yang dipilih untuk dimasukkan.', 'error');
       return;
     }
+    if (autoCreateParents && defaultParentPassword.length < 6) {
+      addToast('Password awal akun orang tua minimal 6 karakter.', 'error');
+      return;
+    }
 
     setImporting(true);
     const nowBase = Date.now();
+    const newUsers: User[] = [];
     const newStudents: Siswa[] = [];
     const newRiwayat: RiwayatKelas[] = [];
+    const createdCreds: AutoParentCredentials[] = [];
 
     const waliMap = new Map(
       db.users
@@ -127,49 +162,68 @@ export const DapodikImportModal: React.FC<DapodikImportModalProps> = ({ onClose 
         .map((u) => [u.kelas_ampu as string, u.user_id])
     );
 
+    const cumulativeUsers: User[] = [...db.users];
+
     includedRows.forEach((row, idx) => {
-      const siswaId = `SIS-${nowBase.toString().slice(-5)}-${idx + 1}`;
-      newStudents.push({
-        siswa_id: siswaId,
+      const result = createStudentWithOptionalAutoParent({
         nis: row.nis,
         nama_anak: row.nama_anak,
         jenis_kelamin: row.jenis_kelamin,
         tanggal_lahir: row.tanggal_lahir,
-        ortu_user_id: '',
         kelas_aktif: row.kelas_tujuan,
-        status_siswa: 'Aktif',
         target_literasi_kelas_b: 'TRACK_1',
-        keputusan_kenaikan: 'BELUM_DITENTUKAN',
+        existingUsers: cumulativeUsers,
+        activeTa: activeTa ? { ta_id: activeTa.ta_id, nama_ta: activeTa.nama_ta } : undefined,
+        waliKelasId: waliMap.get(row.kelas_tujuan) || '',
+        autoCreateParent: autoCreateParents,
+        parentName: row.nama_ortu,
+        parentPassword: defaultParentPassword,
+        nowMs: nowBase + idx * 17,
       });
 
-      if (activeTa) {
+      if (result.newParentUser) {
+        cumulativeUsers.push(result.newParentUser);
+        newUsers.push(result.newParentUser);
+      }
+      if (result.credentials) {
+        createdCreds.push(result.credentials);
+      }
+      newStudents.push(result.siswa);
+      if (result.riwayat) {
         newRiwayat.push({
-          riwayat_id: `RWY-${nowBase}-${idx + 1}`,
-          siswa_id: siswaId,
-          ta_id: activeTa.ta_id,
-          nama_ta: activeTa.nama_ta,
-          kelas: row.kelas_tujuan,
-          wali_kelas_id: waliMap.get(row.kelas_tujuan) || '',
-          status_akhir: 'Berjalan',
+          ...result.riwayat,
           catatan: 'Import Excel Dapodik',
         });
       }
     });
 
-    await updateDb(
+    const summaryMsg = autoCreateParents
+      ? `${newStudents.length} murid & ${newUsers.length} akun orang tua otomatis dibuat dan terhubung${
+          skippedDuplicateCount > 0 ? ` (${skippedDuplicateCount} ganda dilewati)` : ''
+        }.`
+      : skippedDuplicateCount > 0
+      ? `${newStudents.length} murid baru dari Dapodik berhasil dimasukkan (${skippedDuplicateCount} data ganda dilewati).`
+      : `${newStudents.length} murid baru dari Dapodik berhasil dimasukkan.`;
+
+    const ok = await updateDb(
       (prev) => ({
         ...prev,
+        users: newUsers.length > 0 ? [...prev.users, ...newUsers] : prev.users,
         siswa: [...prev.siswa, ...newStudents],
         riwayatKelas: [...prev.riwayatKelas, ...newRiwayat],
       }),
-      skippedDuplicateCount > 0
-        ? `${newStudents.length} murid baru dari Dapodik berhasil dimasukkan (${skippedDuplicateCount} data ganda dilewati).`
-        : `${newStudents.length} murid baru dari Dapodik berhasil dimasukkan.`
+      summaryMsg
     );
 
     setImporting(false);
+    if (!ok) return;
+
     triggerCelebration(`${newStudents.length} murid ditambahkan!`);
-    onClose();
+    if (createdCreds.length > 0) {
+      setImportedCredentials(createdCreds);
+    } else {
+      onClose();
+    }
   };
 
   return (
@@ -194,7 +248,7 @@ export const DapodikImportModal: React.FC<DapodikImportModalProps> = ({ onClose 
               <span>Import data murid dari Excel Dapodik</span>
             </h2>
             <p className="text-xs text-[#55665a] mt-1 m-0">
-              Unggah file Excel peserta didik dari Dapodik (.xlsx / .xls / .csv). Data ganda otomatis dideteksi agar bisa dilewati sebelum masuk ke sistem.
+              Unggah file Excel peserta didik dari Dapodik (.xlsx / .xls / .csv). Data ganda otomatis dideteksi dan akun Orang Tua bisa dibuat sekaligus.
             </p>
           </div>
           <button
@@ -210,255 +264,333 @@ export const DapodikImportModal: React.FC<DapodikImportModalProps> = ({ onClose 
 
         {/* Body */}
         <div className="p-6 overflow-y-auto space-y-4 flex-1">
-          {/* File Picker Row */}
-          <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-2xl border-2 border-dashed border-[#176238]/40 bg-[#dcebd2]/25">
-            <div className="space-y-1">
-              <p className="text-sm font-bold text-[#0f4527] m-0">
-                {fileName ? `File dipilih: ${fileName}` : 'Pilih file Excel Dapodik peserta didik'}
-              </p>
-              <p className="text-xs text-[#55665a] m-0">
-                Mendukung kolom Dapodik (Nama, NIPD/NIS, NISN, JK, Tanggal Lahir, Rombel Saat Ini).
-                {parseResult ? ` · Lembar: "${parseResult.sheetName}"` : ''}
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => downloadDapodikTemplateExcel(kelasList)}
-                className="tbl polos kecil"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span>Unduh contoh format</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="tbl kecil"
-              >
-                <Upload className="w-3.5 h-3.5" />
-                <span>{fileName ? 'Ganti file Excel' : 'Pilih file Excel'}</span>
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".xlsx,.xls,.csv"
-                className="sr-only"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  void handleFileSelected(file);
-                  e.target.value = '';
-                }}
-              />
-            </div>
-          </div>
-
-          {parseError && (
-            <div className="p-3.5 rounded-xl bg-[#f8dcd6] border border-[#e3a396] text-xs text-[#7a2515] font-semibold flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{parseError}</span>
-            </div>
-          )}
-
-          {parseResult && (
-            <>
-              {/* Ringkasan & Peringatan Data Ganda */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="p-3 rounded-xl bg-[#fbf6e7] border border-[#d9d5c0]">
-                  <p className="text-[11px] text-[#55665a] font-bold m-0">Total terbaca</p>
-                  <p className="text-xl font-bold text-[#1d2b21] font-mono-tabular mt-0.5 m-0">
-                    {parseResult.totalCount} baris
-                  </p>
-                </div>
-                <div className="p-3 rounded-xl bg-[#dcebd2]/65 border border-[#b7d3a8]">
-                  <p className="text-[11px] text-[#0f4527] font-bold m-0">Data baru siap masuk</p>
-                  <p className="text-xl font-bold text-[#0f4527] font-mono-tabular mt-0.5 m-0">
-                    {includedRows.length} anak
-                  </p>
-                </div>
-                <div
-                  className={`p-3 rounded-xl border ${
-                    duplicateRows.length > 0
-                      ? 'bg-[#fdeab5]/80 border-[#f2b632]'
-                      : 'bg-[#fbf6e7] border-[#d9d5c0]'
-                  }`}
-                >
-                  <p className="text-[11px] text-[#7c4d03] font-bold m-0">Peringatan data ganda</p>
-                  <p className="text-xl font-bold text-[#7c4d03] font-mono-tabular mt-0.5 m-0">
-                    {duplicateRows.length} data
-                  </p>
-                </div>
-              </div>
-
-              {duplicateRows.length > 0 && (
-                <div className="p-4 rounded-2xl bg-[#fdeab5]/65 border border-[#f2b632] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div className="flex items-start gap-2.5 text-xs text-[#7c4d03]">
-                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-[#b45309]" />
-                    <div className="space-y-0.5">
-                      <p className="font-extrabold m-0">
-                        Peringatan: Ditemukan {duplicateRows.length} data ganda (double data)!
-                      </p>
-                      <p className="m-0 leading-relaxed">
-                        Baris yang sudah ada di sistem atau berulang di file otomatis{' '}
-                        <strong>tidak dicentang</strong> agar tidak masuk ganda. Centang manual hanya jika memang ingin tetap dimasukkan.
-                      </p>
-                    </div>
+          {importedCredentials ? (
+            <div className="space-y-4">
+              <div className="rounded-2xl border border-[#9ec48e] bg-[#dcebd2]/45 p-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-start gap-2.5">
+                  <CheckCircle2 className="w-5 h-5 text-[#176238] shrink-0 mt-0.5" />
+                  <div>
+                    <h3 className="text-base text-[#0f4527] m-0">
+                      {importedCredentials.length} Murid &amp; Akun Orang Tua Berhasil Terhubung!
+                    </h3>
+                    <p className="text-xs text-[#55665a] mt-0.5 m-0">
+                      Salin daftar akun di bawah ini untuk dibagikan kepada orang tua murid.
+                    </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleSkipAllDuplicates}
-                    className="tbl polos kecil shrink-0"
-                  >
-                    Abaikan semua data ganda
-                  </button>
                 </div>
-              )}
-
-              {parseResult.truncated && (
-                <p className="text-xs text-[#7c4d03] m-0">
-                  Menampilkan 1.000 baris pertama dari file Excel.
-                </p>
-              )}
-
-              {/* Kontrol Kelas Default */}
-              <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-[#fbf6e7] border border-[#d9d5c0] text-xs">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-bold text-[#0f4527]">Ubah kelas massal:</span>
-                  <select
-                    aria-label="Pilih kelas default untuk semua baris"
-                    value={defaultKelas}
-                    onChange={(e) => setDefaultKelas(e.target.value)}
-                    className="isian-kontrol min-h-[34px] py-1 text-xs w-auto"
-                  >
-                    {kelasList.map((k) => (
-                      <option key={k.kelas_id} value={k.nama_kelas}>
-                        {k.nama_kelas}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={handleApplyDefaultClassToAll}
-                    className="tbl polos kecil"
-                  >
-                    Terapkan ke semua baris
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setRows((prev) => prev.map((r) => ({ ...r, include: true })))}
-                    className="font-bold text-[#176238] hover:underline cursor-pointer"
-                  >
-                    Centang semua
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRows((prev) => prev.map((r) => ({ ...r, include: false })))}
-                    className="font-bold text-[#a33a25] hover:underline cursor-pointer"
-                  >
-                    Kosongkan semua
-                  </button>
-                </div>
+                <button type="button" onClick={handleCopyAllCreds} className="tbl kecil">
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Salin Semua Info Login</span>
+                </button>
               </div>
 
-              {/* Tabel Pratinjau */}
-              <div className="geser rounded-2xl border border-[#d9d5c0] bg-white">
+              <div className="geser rounded-2xl border border-[#d9d5c0] bg-white max-h-[340px]">
                 <table className="tabel-bersih text-xs">
                   <thead>
                     <tr>
-                      <th className="w-10">Pilih</th>
-                      <th>Nama anak</th>
-                      <th>NIS / NIPD</th>
-                      <th>JK &amp; Tgl lahir</th>
-                      <th>Kelas tujuan</th>
-                      <th>Status pengecekan</th>
+                      <th>Nama Anak</th>
+                      <th>NIS</th>
+                      <th>Nama Wali</th>
+                      <th>Username</th>
+                      <th>Password Awal</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map((r) => {
-                      const isDup = r.duplicateKind !== 'NONE';
-                      return (
-                        <tr
-                          key={r.rowKey}
-                          className={
-                            isDup
-                              ? r.include
-                                ? 'bg-[#fdeab5]/40'
-                                : 'bg-[#f8dcd6]/35 opacity-85'
-                              : r.include
-                              ? 'bg-[#dcebd2]/20'
-                              : 'opacity-65'
-                          }
-                        >
-                          <td>
-                            <button
-                              type="button"
-                              onClick={() => toggleRowInclude(r.rowKey)}
-                              aria-label={`${r.include ? 'Batalkan' : 'Masukkan'} ${r.nama_anak}`}
-                              className="p-1 text-[#176238] cursor-pointer"
-                            >
-                              {r.include ? (
-                                <CheckSquare className="w-4 h-4" />
-                              ) : (
-                                <Square className="w-4 h-4 text-[#55665a]" />
-                              )}
-                            </button>
-                          </td>
-                          <td>
-                            <p className="font-bold text-[#1d2b21] m-0">{r.nama_anak}</p>
-                            {r.nama_ortu && (
-                              <p className="text-[11px] text-[#55665a] m-0">Ortu: {r.nama_ortu}</p>
-                            )}
-                          </td>
-                          <td className="font-mono-tabular font-semibold">{r.nis}</td>
-                          <td className="font-mono-tabular whitespace-nowrap">
-                            {r.jenis_kelamin} · {r.tanggal_lahir}
-                          </td>
-                          <td>
-                            <select
-                              aria-label={`Kelas tujuan ${r.nama_anak}`}
-                              value={r.kelas_tujuan}
-                              onChange={(e) => setRowKelas(r.rowKey, e.target.value)}
-                              className="isian-kontrol min-h-[32px] py-1 text-xs w-auto max-w-[150px]"
-                            >
-                              {kelasList.map((k) => (
-                                <option key={k.kelas_id} value={k.nama_kelas}>
-                                  {k.nama_kelas}
-                                </option>
-                              ))}
-                            </select>
-                            {r.kelas_asal !== '-' && r.kelas_asal !== r.kelas_tujuan && (
-                              <p className="text-[10px] text-[#55665a] mt-0.5 m-0">
-                                Asal Dapodik: {r.kelas_asal}
-                              </p>
-                            )}
-                          </td>
-                          <td>
-                            {isDup ? (
-                              <div className="space-y-0.5">
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#fdeab5] text-[#7c4d03] font-extrabold text-[10px]">
-                                  <AlertTriangle className="w-3 h-3" />
-                                  {r.include ? 'Data ganda (tetap dimasukkan)' : 'Data ganda (dilewati)'}
-                                </span>
-                                <p className="text-[11px] text-[#7a2515] m-0 leading-snug">
-                                  {r.duplicateReason}
-                                </p>
-                              </div>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#dcebd2] text-[#0f4527] font-extrabold text-[10px]">
-                                <CheckCircle2 className="w-3 h-3" />
-                                {r.include ? 'Data baru' : 'Dilewati manual'}
-                              </span>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
+                    {importedCredentials.map((c) => (
+                      <tr key={c.user_id}>
+                        <td className="font-bold text-[#1d2b21]">{c.nama_anak}</td>
+                        <td className="font-mono-tabular">{c.nis}</td>
+                        <td>{c.nama_lengkap}</td>
+                        <td className="font-mono-tabular font-bold text-[#0f4527]">{c.username}</td>
+                        <td className="font-mono-tabular">{c.password}</td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
+            </div>
+          ) : (
+            <>
+              {/* File Picker Row */}
+              <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-2xl border-2 border-dashed border-[#176238]/40 bg-[#dcebd2]/25">
+                <div className="space-y-1">
+                  <p className="text-sm font-bold text-[#0f4527] m-0">
+                    {fileName ? `File dipilih: ${fileName}` : 'Pilih file Excel Dapodik peserta didik'}
+                  </p>
+                  <p className="text-xs text-[#55665a] m-0">
+                    Mendukung kolom Dapodik (Nama, NIPD/NIS, NISN, JK, Tanggal Lahir, Rombel Saat Ini).
+                    {parseResult ? ` · Lembar: "${parseResult.sheetName}"` : ''}
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => downloadDapodikTemplateExcel(kelasList)}
+                    className="tbl polos kecil"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Unduh contoh format</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="tbl kecil"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>{fileName ? 'Ganti file Excel' : 'Pilih file Excel'}</span>
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    className="sr-only"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      void handleFileSelected(file);
+                      e.target.value = '';
+                    }}
+                  />
+                </div>
+              </div>
+
+              {parseError && (
+                <div className="p-3.5 rounded-xl bg-[#f8dcd6] border border-[#e3a396] text-xs text-[#7a2515] font-semibold flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{parseError}</span>
+                </div>
+              )}
+
+              {parseResult && (
+                <>
+                  {/* Opsi Otomatis Buat Akun Orang Tua */}
+                  <div className="p-3.5 rounded-2xl border border-[#9ec48e] bg-[#dcebd2]/35 flex flex-wrap items-center justify-between gap-3">
+                    <label className="inline-flex items-center gap-2.5 cursor-pointer text-xs font-bold text-[#0f4527]">
+                      <input
+                        type="checkbox"
+                        checked={autoCreateParents}
+                        onChange={(e) => setAutoCreateParents(e.target.checked)}
+                        className="w-4 h-4 accent-[#176238]"
+                      />
+                      <span>Otomatis buatkan akun Orang Tua &amp; hubungkan ke tiap anak</span>
+                    </label>
+
+                    {autoCreateParents && (
+                      <div className="flex items-center gap-2 text-xs">
+                        <label htmlFor="dapodik-ortu-pass" className="font-bold text-[#55665a]">
+                          Password awal ortu:
+                        </label>
+                        <input
+                          id="dapodik-ortu-pass"
+                          type="text"
+                          minLength={6}
+                          value={defaultParentPassword}
+                          onChange={(e) => setDefaultParentPassword(e.target.value)}
+                          className="isian-kontrol min-h-[34px] py-1 text-xs font-mono-tabular w-[130px]"
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Ringkasan & Peringatan Data Ganda */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="p-3 rounded-xl bg-[#fbf6e7] border border-[#d9d5c0]">
+                      <p className="text-[11px] text-[#55665a] font-bold m-0">Total terbaca</p>
+                      <p className="text-xl font-bold text-[#1d2b21] font-mono-tabular mt-0.5 m-0">
+                        {parseResult.totalCount} baris
+                      </p>
+                    </div>
+                    <div className="p-3 rounded-xl bg-[#dcebd2]/65 border border-[#b7d3a8]">
+                      <p className="text-[11px] text-[#0f4527] font-bold m-0">Data baru siap masuk</p>
+                      <p className="text-xl font-bold text-[#0f4527] font-mono-tabular mt-0.5 m-0">
+                        {includedRows.length} anak
+                      </p>
+                    </div>
+                    <div
+                      className={`p-3 rounded-xl border ${
+                        duplicateRows.length > 0
+                          ? 'bg-[#fdeab5]/80 border-[#f2b632]'
+                          : 'bg-[#fbf6e7] border-[#d9d5c0]'
+                      }`}
+                    >
+                      <p className="text-[11px] text-[#7c4d03] font-bold m-0">Peringatan data ganda</p>
+                      <p className="text-xl font-bold text-[#7c4d03] font-mono-tabular mt-0.5 m-0">
+                        {duplicateRows.length} data
+                      </p>
+                    </div>
+                  </div>
+
+                  {duplicateRows.length > 0 && (
+                    <div className="p-4 rounded-2xl bg-[#fdeab5]/65 border border-[#f2b632] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-start gap-2.5 text-xs text-[#7c4d03]">
+                        <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-[#b45309]" />
+                        <div className="space-y-0.5">
+                          <p className="font-extrabold m-0">
+                            Peringatan: Ditemukan {duplicateRows.length} data ganda (double data)!
+                          </p>
+                          <p className="m-0 leading-relaxed">
+                            Baris yang sudah ada di sistem atau berulang di file otomatis{' '}
+                            <strong>tidak dicentang</strong> agar tidak masuk ganda. Centang manual hanya jika memang ingin tetap dimasukkan.
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleSkipAllDuplicates}
+                        className="tbl polos kecil shrink-0"
+                      >
+                        Abaikan semua data ganda
+                      </button>
+                    </div>
+                  )}
+
+                  {parseResult.truncated && (
+                    <p className="text-xs text-[#7c4d03] m-0">
+                      Menampilkan 1.000 baris pertama dari file Excel.
+                    </p>
+                  )}
+
+                  {/* Kontrol Kelas Default */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-[#fbf6e7] border border-[#d9d5c0] text-xs">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-bold text-[#0f4527]">Ubah kelas massal:</span>
+                      <select
+                        aria-label="Pilih kelas default untuk semua baris"
+                        value={defaultKelas}
+                        onChange={(e) => setDefaultKelas(e.target.value)}
+                        className="isian-kontrol min-h-[34px] py-1 text-xs w-auto"
+                      >
+                        {kelasList.map((k) => (
+                          <option key={k.kelas_id} value={k.nama_kelas}>
+                            {k.nama_kelas}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={handleApplyDefaultClassToAll}
+                        className="tbl polos kecil"
+                      >
+                        Terapkan ke semua baris
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setRows((prev) => prev.map((r) => ({ ...r, include: true })))}
+                        className="font-bold text-[#176238] hover:underline cursor-pointer"
+                      >
+                        Centang semua
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRows((prev) => prev.map((r) => ({ ...r, include: false })))}
+                        className="font-bold text-[#a33a25] hover:underline cursor-pointer"
+                      >
+                        Kosongkan semua
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Tabel Pratinjau */}
+                  <div className="geser rounded-2xl border border-[#d9d5c0] bg-white">
+                    <table className="tabel-bersih text-xs">
+                      <thead>
+                        <tr>
+                          <th className="w-10">Pilih</th>
+                          <th>Nama anak</th>
+                          <th>NIS / NIPD</th>
+                          <th>JK &amp; Tgl lahir</th>
+                          <th>Kelas tujuan</th>
+                          <th>Status pengecekan</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((r) => {
+                          const isDup = r.duplicateKind !== 'NONE';
+                          return (
+                            <tr
+                              key={r.rowKey}
+                              className={
+                                isDup
+                                  ? r.include
+                                    ? 'bg-[#fdeab5]/40'
+                                    : 'bg-[#f8dcd6]/35 opacity-85'
+                                  : r.include
+                                  ? 'bg-[#dcebd2]/20'
+                                  : 'opacity-65'
+                              }
+                            >
+                              <td>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleRowInclude(r.rowKey)}
+                                  aria-label={`${r.include ? 'Batalkan' : 'Masukkan'} ${r.nama_anak}`}
+                                  className="p-1 text-[#176238] cursor-pointer"
+                                >
+                                  {r.include ? (
+                                    <CheckSquare className="w-4 h-4" />
+                                  ) : (
+                                    <Square className="w-4 h-4 text-[#55665a]" />
+                                  )}
+                                </button>
+                              </td>
+                              <td>
+                                <p className="font-bold text-[#1d2b21] m-0">{r.nama_anak}</p>
+                                {r.nama_ortu && (
+                                  <p className="text-[11px] text-[#55665a] m-0">Ortu: {r.nama_ortu}</p>
+                                )}
+                              </td>
+                              <td className="font-mono-tabular font-semibold">{r.nis}</td>
+                              <td className="font-mono-tabular whitespace-nowrap">
+                                {r.jenis_kelamin} · {r.tanggal_lahir}
+                              </td>
+                              <td>
+                                <select
+                                  aria-label={`Kelas tujuan ${r.nama_anak}`}
+                                  value={r.kelas_tujuan}
+                                  onChange={(e) => setRowKelas(r.rowKey, e.target.value)}
+                                  className="isian-kontrol min-h-[32px] py-1 text-xs w-auto max-w-[150px]"
+                                >
+                                  {kelasList.map((k) => (
+                                    <option key={k.kelas_id} value={k.nama_kelas}>
+                                      {k.nama_kelas}
+                                    </option>
+                                  ))}
+                                </select>
+                                {r.kelas_asal !== '-' && r.kelas_asal !== r.kelas_tujuan && (
+                                  <p className="text-[10px] text-[#55665a] mt-0.5 m-0">
+                                    Asal Dapodik: {r.kelas_asal}
+                                  </p>
+                                )}
+                              </td>
+                              <td>
+                                {isDup ? (
+                                  <div className="space-y-0.5">
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#fdeab5] text-[#7c4d03] font-extrabold text-[10px]">
+                                      <AlertTriangle className="w-3 h-3" />
+                                      {r.include ? 'Data ganda (tetap dimasukkan)' : 'Data ganda (dilewati)'}
+                                    </span>
+                                    <p className="text-[11px] text-[#7a2515] m-0 leading-snug">
+                                      {r.duplicateReason}
+                                    </p>
+                                  </div>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#dcebd2] text-[#0f4527] font-extrabold text-[10px]">
+                                    <CheckCircle2 className="w-3 h-3" />
+                                    {r.include ? 'Data baru' : 'Dilewati manual'}
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
             </>
           )}
         </div>
@@ -466,8 +598,12 @@ export const DapodikImportModal: React.FC<DapodikImportModalProps> = ({ onClose 
         {/* Footer */}
         <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4 border-t border-[#d9d5c0] bg-[#fbf6e7]">
           <p className="text-xs text-[#55665a] m-0">
-            {parseResult
+            {importedCredentials
+              ? `${importedCredentials.length} akun orang tua telah dibuat dan dihubungkan otomatis.`
+              : parseResult
               ? `${includedRows.length} siswa akan dimasukkan${
+                  autoCreateParents ? ' + akun orang tua otomatis' : ''
+                }${
                   skippedDuplicateCount > 0
                     ? ` · ${skippedDuplicateCount} data ganda dikonfirmasi tidak dimasukkan`
                     : ''
@@ -475,24 +611,34 @@ export const DapodikImportModal: React.FC<DapodikImportModalProps> = ({ onClose 
               : 'Belum ada file yang diunggah.'}
           </p>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              disabled={importing}
-              onClick={onClose}
-              className="tbl polos"
-            >
-              Batal
-            </button>
-            <button
-              type="button"
-              disabled={importing || includedRows.length === 0}
-              onClick={handleConfirmImport}
-              className="tbl"
-            >
-              {importing
-                ? 'Menyimpan...'
-                : `Konfirmasi & Masukkan ${includedRows.length} Siswa`}
-            </button>
+            {importedCredentials ? (
+              <button type="button" onClick={onClose} className="tbl">
+                Selesai
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  disabled={importing}
+                  onClick={onClose}
+                  className="tbl polos"
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  disabled={importing || includedRows.length === 0}
+                  onClick={handleConfirmImport}
+                  className="tbl"
+                >
+                  {importing
+                    ? 'Menyimpan...'
+                    : autoCreateParents
+                    ? `Konfirmasi & Masukkan ${includedRows.length} Siswa + Ortu`
+                    : `Konfirmasi & Masukkan ${includedRows.length} Siswa`}
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>

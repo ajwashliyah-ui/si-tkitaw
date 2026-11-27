@@ -238,6 +238,16 @@ function verifySyncKey_(incoming) {
   return String(incoming || '') === String(saved);
 }
 
+function sanitizeGasCell_(val) {
+  if (typeof val !== 'string') return val;
+  if (val.length <= 45000) return val;
+  var kb = Math.max(1, Math.round((val.length * 3) / 4 / 1024));
+  if (val.indexOf('data:image/') === 0) {
+    return '[Foto tersimpan di aplikasi (' + kb + ' KB)]';
+  }
+  return val.slice(0, 44980) + '...';
+}
+
 function replaceSheetRows_(ss, name, headers, rows) {
   var sheet = ss.getSheetByName(name);
   if (!sheet) sheet = ss.insertSheet(name);
@@ -246,13 +256,17 @@ function replaceSheetRows_(ss, name, headers, rows) {
   sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#dcebd2');
   sheet.setFrozenRows(1);
   if (rows && rows.length) {
-    sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+    var safeRows = rows.map(function(r) {
+      return r.map(sanitizeGasCell_);
+    });
+    sheet.getRange(2, 1, safeRows.length, headers.length).setValues(safeRows);
   }
 }
 
 function syncFullDatabase_(db) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var cfg = db.pengaturanSekolah || {};
+  var currentMap = getPengaturanMap_();
   replaceSheetRows_(ss, 'PengaturanSekolah', ['key', 'value', 'keterangan'], [
     ['nama_sekolah', cfg.nama_sekolah || '', 'Nama resmi lembaga PAUD'],
     ['npsn', cfg.npsn || '', 'Nomor Pokok Sekolah Nasional'],
@@ -261,7 +275,12 @@ function syncFullDatabase_(db) {
     ['kepala_sekolah', cfg.kepala_sekolah || '', 'Nama Kepala Sekolah'],
     ['tahun_ajaran_aktif', cfg.tahun_ajaran_aktif || '', 'Tahun ajaran berjalan'],
     ['semester_aktif', cfg.semester_aktif || 'Semester 1', 'Semester berjalan'],
-    ['folder_drive_id', cfg.folder_drive_id || '', 'ID folder Google Drive']
+    ['folder_drive_id', cfg.folder_drive_id || currentMap.folder_drive_id || '', 'ID folder Google Drive foto KAIH'],
+    ['folder_karya_drive_id', currentMap.folder_karya_drive_id || '', 'ID folder Google Drive foto Hasil Karya'],
+    ['google_spreadsheet_id', cfg.google_spreadsheet_id || '', 'ID Google Spreadsheet'],
+    ['google_spreadsheet_url', cfg.google_spreadsheet_url || '', 'URL Google Spreadsheet'],
+    ['auto_sync_sheets', cfg.auto_sync_sheets !== false ? 'true' : 'false', 'Sinkronisasi real-time'],
+    ['admin_claimed', cfg.admin_claimed ? 'true' : 'false', 'Status aktivasi Admin']
   ]);
 
   replaceSheetRows_(ss, 'Users',
@@ -335,9 +354,9 @@ function syncFullDatabase_(db) {
   );
 
   replaceSheetRows_(ss, 'Log_Materi_Harian',
-    ['id_log', 'tanggal', 'id_siswa', 'nama_siswa', 'kelas', 'bidang', 'kategori', 'kode_item', 'item_dipilih', 'halaman_iqra', 'status_penguasaan', 'catatan_guru', 'nama_guru', 'timestamp'],
+    ['id_log', 'tanggal', 'id_siswa', 'nama_siswa', 'kelas', 'ta_id', 'bidang', 'kategori', 'kode_item', 'item_dipilih', 'halaman_iqra', 'status_penguasaan', 'catatan_guru', 'nama_guru', 'timestamp'],
     (db.logMateriHarian || []).map(function(l) {
-      return [l.id_log, l.tanggal, l.id_siswa, l.nama_siswa, l.kelas, l.bidang, l.kategori, l.kode_item, l.item_dipilih, l.halaman_iqra || '', l.status_penguasaan, l.catatan_guru || '', l.nama_guru, l.timestamp];
+      return [l.id_log, l.tanggal, l.id_siswa, l.nama_siswa, l.kelas, l.ta_id || '', l.bidang, l.kategori, l.kode_item, l.item_dipilih, l.halaman_iqra || '', l.status_penguasaan, l.catatan_guru || '', l.nama_guru, l.timestamp];
     })
   );
 
@@ -369,6 +388,42 @@ function syncFullDatabase_(db) {
     })
   );
 
+  if (db.masterMateri && db.masterMateri.length) {
+    replaceSheetRows_(ss, 'Master_Materi',
+      ['materi_id', 'kategori', 'nama_materi', 'urutan', 'aktif'],
+      db.masterMateri.map(function(m) {
+        return [m.materi_id, m.kategori, m.nama_materi, Number(m.urutan) || 1, m.aktif !== false];
+      })
+    );
+  }
+
+  if (db.masterTips && db.masterTips.length) {
+    replaceSheetRows_(ss, 'Master_Tips',
+      ['tips_id', 'kategori_pemicu', 'kondisi_pemicu', 'judul_tips', 'isi_tips_ayah_bunda', 'aktif'],
+      db.masterTips.map(function(t) {
+        return [t.tips_id, t.kategori_pemicu, t.kondisi_pemicu, t.judul_tips, t.isi_tips_ayah_bunda, t.aktif !== false];
+      })
+    );
+  }
+
+  if (db.bankMateriHarian && db.bankMateriHarian.length) {
+    replaceSheetRows_(ss, 'Bank_Materi_Harian',
+      ['kode_item', 'bidang', 'level_track', 'kategori', 'label_kelompok', 'isi_item', 'pertanyaan_cek', 'aktif'],
+      db.bankMateriHarian.map(function(b) {
+        return [b.kode_item, b.bidang, b.level_track, b.kategori, b.label_kelompok, b.isi_item, b.pertanyaan_cek || '', b.aktif !== false];
+      })
+    );
+  }
+
+  if (db.masterAtp && db.masterAtp.length) {
+    replaceSheetRows_(ss, 'Master_ATP',
+      ['atp_uid', 'kelompok', 'semester_target', 'elemen', 'kode_atp', 'tujuan_pembelajaran', 'aktif'],
+      db.masterAtp.map(function(a) {
+        return [a.atp_uid, a.kelompok, a.semester_target, a.elemen, a.kode_atp, a.tujuan_pembelajaran, a.aktif !== false];
+      })
+    );
+  }
+
   replaceSheetRows_(ss, 'Master_Kelas',
     ['kelas_id', 'nama_kelas', 'jenjang', 'urutan', 'aktif'],
     (db.masterKelas || []).map(function(k) {
@@ -377,6 +432,18 @@ function syncFullDatabase_(db) {
   );
 
   return { synced: true, timestamp: new Date().toISOString() };
+}
+
+function normalizeGasCellValue_(val, headerName) {
+  if (val instanceof Date) {
+    var tz = Session.getScriptTimeZone() || 'Asia/Jakarta';
+    if (headerName === 'periode_bulan') return Utilities.formatDate(val, tz, 'yyyy-MM');
+    if (headerName === 'updated_at' || headerName === 'created_at' || headerName === 'timestamp') {
+      return val.toISOString();
+    }
+    return Utilities.formatDate(val, tz, 'yyyy-MM-dd');
+  }
+  return val;
 }
 
 function sheetToObjects_(ss, name) {
@@ -388,7 +455,7 @@ function sheetToObjects_(ss, name) {
   for (var i = 1; i < values.length; i++) {
     var obj = {};
     for (var j = 0; j < headers.length; j++) {
-      obj[headers[j]] = values[i][j];
+      obj[headers[j]] = normalizeGasCellValue_(values[i][j], headers[j]);
     }
     rows.push(obj);
   }
@@ -407,7 +474,11 @@ function pullFullDatabase_() {
       kepala_sekolah: cfg.kepala_sekolah || '',
       tahun_ajaran_aktif: cfg.tahun_ajaran_aktif || '2026/2027',
       semester_aktif: cfg.semester_aktif || 'Semester 1',
-      folder_drive_id: cfg.folder_drive_id || ''
+      folder_drive_id: cfg.folder_drive_id || '',
+      google_spreadsheet_id: cfg.google_spreadsheet_id || '',
+      google_spreadsheet_url: cfg.google_spreadsheet_url || '',
+      auto_sync_sheets: cfg.auto_sync_sheets !== 'false',
+      admin_claimed: cfg.admin_claimed === 'true'
     },
     users: sheetToObjects_(ss, 'Users'),
     tahunAjaran: sheetToObjects_(ss, 'TahunAjaran'),

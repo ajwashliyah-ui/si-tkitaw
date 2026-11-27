@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { LucideIcon } from 'lucide-react';
+import { CheckCircle2, CloudOff, LucideIcon, RefreshCw } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { StickerCelebration } from '../common/StickerCelebration';
 
@@ -23,12 +23,37 @@ export const AppShell: React.FC<AppShellProps> = ({
   onSelectTab,
   children,
 }) => {
-  const { schoolInfo, currentUser, logout, changePassword, saving } = useApp();
+  const {
+    db,
+    schoolInfo,
+    currentUser,
+    logout,
+    changePassword,
+    saving,
+    googleSyncing,
+    needsGoogleReauth,
+    syncStatus,
+    connectGoogleSheets,
+  } = useApp();
   const [showPassModal, setShowPassModal] = useState(false);
   const [lama, setLama] = useState('');
   const [baru, setBaru] = useState('');
   const [passError, setPassError] = useState('');
   const [passSubmitting, setPassSubmitting] = useState(false);
+  const [reconnectingGoogle, setReconnectingGoogle] = useState(false);
+
+  const isAdmin = currentUser?.role === 'Admin';
+  const hasDirectSheet = Boolean(db.pengaturanSekolah.google_spreadsheet_id?.trim());
+  const autoSyncEnabled = db.pengaturanSekolah.auto_sync_sheets !== false;
+
+  const handleReconnectGoogle = async () => {
+    setReconnectingGoogle(true);
+    try {
+      await connectGoogleSheets();
+    } finally {
+      setReconnectingGoogle(false);
+    }
+  };
 
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -69,7 +94,41 @@ export const AppShell: React.FC<AppShellProps> = ({
         </span>
 
         <div className="akun">
-          <span className="text-[#1d2b21] truncate max-w-[200px]">
+          {isAdmin && (
+            <>
+              {googleSyncing ? (
+                <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#dcebd2]/70 text-[#0f4527] text-xs font-bold">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Menyinkronkan Sheet...</span>
+                </span>
+              ) : hasDirectSheet && autoSyncEnabled && needsGoogleReauth ? (
+                <button
+                  type="button"
+                  disabled={reconnectingGoogle}
+                  onClick={handleReconnectGoogle}
+                  className="tbl polos kecil"
+                  title="Sesi Google Sheets berakhir setelah muat ulang halaman. Klik untuk menyambungkan kembali sinkronisasi real-time."
+                >
+                  <CloudOff className="w-3.5 h-3.5 text-[#b45309]" />
+                  <span>{reconnectingGoogle ? 'Menghubungkan...' : 'Sambungkan Google'}</span>
+                </button>
+              ) : syncStatus.connected ? (
+                <span
+                  className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#dcebd2]/70 text-[#0f4527] text-xs font-bold"
+                  title={
+                    syncStatus.lastSyncAt
+                      ? `Tersinkron real-time (${new Date(syncStatus.lastSyncAt).toLocaleString('id-ID')})`
+                      : 'Google Sheets terhubung'
+                  }
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5 text-[#176238]" />
+                  <span>Sheets Real-Time</span>
+                </span>
+              ) : null}
+            </>
+          )}
+
+          <span className="text-[#1d2b21] truncate max-w-[180px]">
             {currentUser?.nama_lengkap}
           </span>
           <button

@@ -1,9 +1,56 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { User as FirebaseUser } from 'firebase/auth';
 import { KelasType, PengaturanSekolah, SchoolDatabase, User, UserRole } from '../types';
 import { createInitialSeedDatabase } from '../data/seedDatabase';
 import { purgeStudentsFromDatabase } from '../utils/studentCleanup';
+import {
+  getWorkspaceAccessToken,
+  googleWorkspaceSignIn,
+  googleWorkspaceSignOut,
+  initGoogleWorkspaceAuth,
+} from '../utils/googleWorkspaceAuth';
+import {
+  extractSpreadsheetId,
+  pullSchoolDatabaseFromSpreadsheet,
+  SpreadsheetMeta,
+  syncSchoolDatabaseToSpreadsheet,
+} from '../utils/googleSheetsDirect';
 
 export type SessionUser = Omit<User, 'password_hash' | 'password'>;
+
+const SESSION_TOKEN_KEY = 'tk_alwashliyah_token';
+const SESSION_USER_KEY = 'tk_alwashliyah_user';
+
+function saveAppSession(token: string, user: SessionUser): void {
+  try {
+    sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+    sessionStorage.setItem(SESSION_USER_KEY, JSON.stringify(user));
+  } catch {
+    // Ignore storage quota/private mode errors
+  }
+}
+
+function clearAppSession(): void {
+  try {
+    sessionStorage.removeItem(SESSION_TOKEN_KEY);
+    sessionStorage.removeItem(SESSION_USER_KEY);
+  } catch {
+    // Ignore
+  }
+}
+
+function readStoredAppSession(): { token: string; user: SessionUser } | null {
+  try {
+    const token = sessionStorage.getItem(SESSION_TOKEN_KEY);
+    const rawUser = sessionStorage.getItem(SESSION_USER_KEY);
+    if (!token || !rawUser) return null;
+    const user = JSON.parse(rawUser) as SessionUser;
+    if (!user?.user_id || !user?.role) return null;
+    return { token, user };
+  } catch {
+    return null;
+  }
+}
 
 interface ToastMessage {
   id: number;
@@ -16,6 +63,7 @@ export interface SyncStatusInfo {
   lastSyncAt: string | null;
   lastError: string | null;
   schoolName: string | null;
+  syncedVersion?: number;
 }
 
 export interface CelebrationEvent {
@@ -49,10 +97,15 @@ interface AppContextValue {
   saving: boolean;
   toasts: ToastMessage[];
   syncStatus: SyncStatusInfo;
+  googleUser: FirebaseUser | null;
+  googleConnected: boolean;
+  googleSyncing: boolean;
+  needsGoogleReauth: boolean;
   celebration: CelebrationEvent | null;
   triggerCelebration: (label?: string) => void;
   login: (username: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   setupAdmin: (payload: SetupAdminPayload) => Promise<{ ok: boolean; error?: string }>;
+  refreshSchoolInfo: () => Promise<void>;
   createUserByAdmin: (payload: CreateUserByAdminPayload) => Promise<{ ok: boolean; error?: string }>;
   deleteUserByAdmin: (userId: string) => Promise<{ ok: boolean; error?: string }>;
   deleteSiswaWithCleanup: (siswaId: string) => Promise<void>;
@@ -61,8 +114,8 @@ interface AppContextValue {
   updateDb: (
     updater: (prev: SchoolDatabase) => SchoolDatabase,
     toastText?: string,
-    options?: { graduatedSiswaIds?: string[] }
-  ) => Promise<void>;
+    options?: { graduatedSiswaIds?: string[]; skipOAuthAutoSync?: boolean }
+  ) => Promise<boolean>;
   addToast: (text: string, type?: 'success' | 'error' | 'info') => void;
   dismissToast: (id: number) => void;
   resetDemoDatabase: () => Promise<void>;
@@ -70,6 +123,11 @@ interface AppContextValue {
   testSheetsConnection: (url?: string, syncKey?: string) => Promise<{ ok: boolean; message: string }>;
   pushToSheets: () => Promise<void>;
   pullFromSheets: () => Promise<void>;
+  connectGoogleSheets: () => Promise<boolean>;
+  disconnectGoogleSheets: () => Promise<void>;
+  syncDirectToSpreadsheet: (overrideSpreadsheetId?: string, overrideDb?: SchoolDatabase) => Promise<boolean>;
+  pullDirectFromSpreadsheet: (overrideSpreadsheetId?: string) => Promise<boolean>;
+  markDirectOAuthSynced: (meta: SpreadsheetMeta) => Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -104,20 +162,15 @@ export function getClientDefaultGasUrl(): string {
   return '';
 }
 
-function withDefaultGasUrl(data: SchoolDatabase): SchoolDatabase {
-  const currentUrl = data.pengaturanSekolah?.gas_webapp_url?.trim();
-  if (currentUrl && !currentUrl.includes('GANTI_DENGAN_DEPLOYMENT_ID_ANDA')) {
-    return data;
-  }
-  const fallback = getClientDefaultGasUrl();
-  if (!fallback) return data;
-  return {
-    ...data,
-    pengaturanSekolah: {
-      ...data.pengaturanSekolah,
-      gas_webapp_url: fallback,
-    },
-  };
+function isGoogleAuthFailureMessage(msg: string): boolean {
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes('401') ||
+    lower.includes('unauthenticated') ||
+    lower.includes('invalid authentication') ||
+    lower.includes('token') ||
+    lower.includes('expired')
+  );
 }
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -129,7 +182,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   );
   const [adminClaimed, setAdminClaimed] = useState<boolean>(false);
   const [currentUser, setCurrentUser] = useState<SessionUser | null>(null);
+  const currentUserRef = useRef<SessionUser | null>(null);
+  currentUserRef.current = currentUser;
   const [token, setToken] = useState<string | null>(null);
+  const tokenRef = useRef<string | null>(null);
+  tokenRef.current = token;
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -139,14 +196,48 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     lastSyncAt: null,
     lastError: null,
     schoolName: null,
+    syncedVersion: 0,
   });
+
+  // Google Workspace OAuth direct Sheets state (access token kept strictly in memory)
+  const [googleUser, setGoogleUser] = useState<FirebaseUser | null>(null);
+  const [googleConnected, setGoogleConnected] = useState<boolean>(false);
+  const googleConnectedRef = useRef<boolean>(false);
+  googleConnectedRef.current = googleConnected;
+  const [googleSyncing, setGoogleSyncing] = useState<boolean>(false);
+  const [needsGoogleReauth, setNeedsGoogleReauth] = useState<boolean>(false);
+
+  // Version & sync coordination refs
+  const dbVersionRef = useRef<number>(0);
+  const lastSyncedVersionRef = useRef<number>(0);
+  const lastOAuthErrorToastAtRef = useRef<number>(0);
+  const oauthSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Sequential mutation queue prevents concurrent client-side writes from overwriting each other
+  const mutationQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const enqueueMutation = useCallback(<T,>(fn: () => Promise<T>): Promise<T> => {
+    const next = mutationQueueRef.current.then(fn, fn);
+    mutationQueueRef.current = next.then(
+      () => undefined,
+      () => undefined
+    );
+    return next;
+  }, []);
+
+  // Coalesced OAuth Sheets sync queue so every change syncs reliably in real-time
+  const oauthSyncPendingRef = useRef<{
+    db: SchoolDatabase;
+    spreadsheetId: string;
+    version: number;
+  } | null>(null);
+  const oauthSyncPromiseRef = useRef<Promise<boolean> | null>(null);
 
   const addToast = useCallback((text: string, type: 'success' | 'error' | 'info' = 'success') => {
     const id = Date.now() + Math.floor(Math.random() * 1000);
     setToasts((prev) => [...prev, { id, type, text }]);
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 3400);
+    }, 3800);
   }, []);
 
   const dismissToast = useCallback((id: number) => {
@@ -162,52 +253,424 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   useEffect(() => {
-    let active = true;
-    fetch('/api/school-info')
-      .then((res) => safeJson(res))
-      .then((json) => {
-        if (active && json?.ok && json.pengaturanSekolah) {
-          setSchoolInfo(json.pengaturanSekolah);
-          if (typeof json.adminClaimed === 'boolean') {
-            setAdminClaimed(json.adminClaimed);
-          }
-          if (json.syncStatus) setSyncStatus(json.syncStatus);
+    const unsubscribe = initGoogleWorkspaceAuth(
+      (user) => {
+        setGoogleUser(user);
+        setGoogleConnected(true);
+        setNeedsGoogleReauth(false);
+      },
+      () => {
+        setGoogleUser(null);
+        setGoogleConnected(false);
+        if (dbRef.current.pengaturanSekolah.google_spreadsheet_id?.trim()) {
+          setNeedsGoogleReauth(true);
         }
-      })
-      .catch(() => {
-        // Fallback to seed metadata if offline or static host
-      })
-      .finally(() => {
-        if (active) setLoading(false);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const hasSheetId = Boolean(db.pengaturanSekolah.google_spreadsheet_id?.trim());
+    const autoEnabled = db.pengaturanSekolah.auto_sync_sheets !== false;
+    if (hasSheetId && autoEnabled && !googleConnected) {
+      setNeedsGoogleReauth(true);
+    } else if (!hasSheetId || googleConnected) {
+      setNeedsGoogleReauth(false);
+    }
+  }, [
+    db.pengaturanSekolah.google_spreadsheet_id,
+    db.pengaturanSekolah.auto_sync_sheets,
+    googleConnected,
+  ]);
+
+  const notifyServerOAuthSyncResult = useCallback(
+    async (
+      ok: boolean,
+      details: { schoolName?: string; syncedVersion?: number; error?: string }
+    ) => {
+      const authToken = tokenRef.current;
+      if (!authToken) return;
+      try {
+        const res = await fetch('/api/sheets/oauth-sync', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`,
+          },
+          body: JSON.stringify({
+            ok,
+            schoolName: details.schoolName,
+            syncedVersion: details.syncedVersion,
+            error: details.error,
+          }),
+        });
+        const json = await safeJson(res);
+        if (res.ok && json?.syncStatus) {
+          setSyncStatus(json.syncStatus);
+        }
+      } catch {
+        // Non-blocking status sync
+      }
+    },
+    []
+  );
+
+  const markDirectOAuthSynced = useCallback(
+    async (meta: SpreadsheetMeta) => {
+      const version = dbVersionRef.current || Date.now();
+      lastSyncedVersionRef.current = Math.max(lastSyncedVersionRef.current, version);
+      setNeedsGoogleReauth(false);
+      setGoogleConnected(true);
+      setSyncStatus({
+        connected: true,
+        lastSyncAt: new Date().toISOString(),
+        lastError: null,
+        schoolName: meta.title || dbRef.current.pengaturanSekolah.nama_sekolah,
+        syncedVersion: version,
       });
+      await notifyServerOAuthSyncResult(true, {
+        schoolName: meta.title || dbRef.current.pengaturanSekolah.nama_sekolah,
+        syncedVersion: version,
+      });
+    },
+    [notifyServerOAuthSyncResult]
+  );
+
+  const runDirectOAuthSync = useCallback(
+    async (
+      snapshot: SchoolDatabase,
+      overrideSpreadsheetId?: string,
+      targetVersion?: number,
+      showErrorToast = false
+    ): Promise<boolean> => {
+      const sheetId = extractSpreadsheetId(
+        overrideSpreadsheetId || snapshot.pengaturanSekolah.google_spreadsheet_id || ''
+      );
+      if (!sheetId) return false;
+
+      const accessToken = await getWorkspaceAccessToken();
+      if (!accessToken) {
+        setGoogleConnected(false);
+        setNeedsGoogleReauth(true);
+        return false;
+      }
+
+      const jobVersion = targetVersion ?? dbVersionRef.current ?? Date.now();
+      oauthSyncPendingRef.current = {
+        db: snapshot,
+        spreadsheetId: sheetId,
+        version: jobVersion,
+      };
+      if (oauthSyncPromiseRef.current) {
+        return oauthSyncPromiseRef.current;
+      }
+
+      const runner = (async (): Promise<boolean> => {
+        let lastOk = false;
+        setGoogleSyncing(true);
+        try {
+          while (oauthSyncPendingRef.current) {
+            const job = oauthSyncPendingRef.current;
+            oauthSyncPendingRef.current = null;
+            const liveToken = await getWorkspaceAccessToken();
+            if (!liveToken) {
+              setGoogleConnected(false);
+              setNeedsGoogleReauth(true);
+              lastOk = false;
+              break;
+            }
+            const res = await syncSchoolDatabaseToSpreadsheet(
+              liveToken,
+              job.spreadsheetId,
+              job.db
+            );
+            lastSyncedVersionRef.current = Math.max(lastSyncedVersionRef.current, job.version);
+            const schoolName = res.meta.title || job.db.pengaturanSekolah.nama_sekolah;
+            setNeedsGoogleReauth(false);
+            setGoogleConnected(true);
+            setSyncStatus({
+              connected: true,
+              lastSyncAt: new Date().toISOString(),
+              lastError: null,
+              schoolName,
+              syncedVersion: lastSyncedVersionRef.current,
+            });
+            void notifyServerOAuthSyncResult(true, {
+              schoolName,
+              syncedVersion: lastSyncedVersionRef.current,
+            });
+            lastOk = true;
+          }
+          return lastOk;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Gagal sinkron ke Google Sheets.';
+          if (isGoogleAuthFailureMessage(msg)) {
+            setNeedsGoogleReauth(true);
+            setGoogleConnected(false);
+          }
+          setSyncStatus((prev) => ({
+            ...prev,
+            lastError: msg,
+          }));
+          void notifyServerOAuthSyncResult(false, { error: msg });
+          if (showErrorToast) {
+            const now = Date.now();
+            if (now - lastOAuthErrorToastAtRef.current > 8000) {
+              lastOAuthErrorToastAtRef.current = now;
+              addToast(
+                `Data tersimpan di aplikasi, tetapi gagal sinkron ke Google Sheets: ${msg}`,
+                'error'
+              );
+            }
+          }
+          return false;
+        } finally {
+          setGoogleSyncing(false);
+          oauthSyncPromiseRef.current = null;
+        }
+      })();
+
+      oauthSyncPromiseRef.current = runner;
+      return runner;
+    },
+    [addToast, notifyServerOAuthSyncResult]
+  );
+
+  const scheduleRealtimeOAuthSync = useCallback(
+    (snapshot: SchoolDatabase, targetVersion?: number, immediate = false) => {
+      if (currentUserRef.current?.role !== 'Admin') return;
+      const sheetId = extractSpreadsheetId(snapshot.pengaturanSekolah.google_spreadsheet_id || '');
+      if (!sheetId) return;
+      if (snapshot.pengaturanSekolah.auto_sync_sheets === false) return;
+      if (!googleConnectedRef.current) return;
+
+      if (oauthSyncTimerRef.current) {
+        clearTimeout(oauthSyncTimerRef.current);
+        oauthSyncTimerRef.current = null;
+      }
+
+      if (immediate) {
+        void runDirectOAuthSync(snapshot, sheetId, targetVersion, true);
+        return;
+      }
+
+      oauthSyncTimerRef.current = setTimeout(() => {
+        oauthSyncTimerRef.current = null;
+        void runDirectOAuthSync(dbRef.current, sheetId, targetVersion ?? dbVersionRef.current, true);
+      }, 350);
+    },
+    [runDirectOAuthSync]
+  );
+
+  const syncDirectToSpreadsheet = useCallback(
+    async (overrideSpreadsheetId?: string, overrideDb?: SchoolDatabase): Promise<boolean> => {
+      const targetDb = overrideDb || dbRef.current;
+      const ok = await runDirectOAuthSync(
+        targetDb,
+        overrideSpreadsheetId,
+        dbVersionRef.current,
+        true
+      );
+      return ok;
+    },
+    [runDirectOAuthSync]
+  );
+
+  const loadDbWithToken = useCallback(async (authToken: string): Promise<boolean> => {
+    try {
+      const dbRes = await fetch('/api/db', {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (dbRes.status === 401) {
+        clearAppSession();
+        setToken(null);
+        setCurrentUser(null);
+        return false;
+      }
+      const dbJson = await safeJson(dbRes);
+      if (dbRes.ok && dbJson?.ok && dbJson.data) {
+        const next = dbJson.data as SchoolDatabase;
+        dbRef.current = next;
+        setDb(next);
+        setSchoolInfo(next.pengaturanSekolah);
+        if (dbJson.user) {
+          setCurrentUser(dbJson.user);
+          saveAppSession(authToken, dbJson.user);
+        }
+        if (typeof dbJson.dbVersion === 'number') {
+          dbVersionRef.current = dbJson.dbVersion;
+        }
+        if (dbJson.syncStatus) {
+          setSyncStatus(dbJson.syncStatus);
+          if (typeof dbJson.syncStatus.syncedVersion === 'number') {
+            lastSyncedVersionRef.current = Math.max(
+              lastSyncedVersionRef.current,
+              dbJson.syncStatus.syncedVersion
+            );
+          }
+        }
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const refreshSchoolInfo = useCallback(async () => {
+    try {
+      const infoRes = await fetch('/api/school-info');
+      const json = await safeJson(infoRes);
+      if (json?.ok && json.pengaturanSekolah) {
+        setSchoolInfo(json.pengaturanSekolah);
+        if (typeof json.adminClaimed === 'boolean') {
+          setAdminClaimed(json.adminClaimed);
+        }
+        if (typeof json.dbVersion === 'number') {
+          dbVersionRef.current = json.dbVersion;
+        }
+        if (json.syncStatus) {
+          setSyncStatus(json.syncStatus);
+          if (typeof json.syncStatus.syncedVersion === 'number') {
+            lastSyncedVersionRef.current = Math.max(
+              lastSyncedVersionRef.current,
+              json.syncStatus.syncedVersion
+            );
+          }
+        }
+      }
+    } catch {
+      // Fallback to existing metadata if offline or static host
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const init = async () => {
+      await refreshSchoolInfo();
+
+      const stored = readStoredAppSession();
+      if (active && stored?.token) {
+        setToken(stored.token);
+        setCurrentUser(stored.user);
+        const valid = await loadDbWithToken(stored.token);
+        if (!valid && active) {
+          clearAppSession();
+          setToken(null);
+          setCurrentUser(null);
+        }
+      }
+
+      if (active) setLoading(false);
+    };
+    void init();
     return () => {
       active = false;
     };
-  }, []);
+  }, [loadDbWithToken, refreshSchoolInfo]);
 
-  const loadDbWithToken = useCallback(async (authToken: string) => {
-    const dbRes = await fetch('/api/db', {
-      headers: { Authorization: `Bearer ${authToken}` },
-    });
-    const dbJson = await safeJson(dbRes);
-    if (dbRes.ok && dbJson?.ok && dbJson.data) {
-      const next = withDefaultGasUrl(dbJson.data);
-      dbRef.current = next;
-      setDb(next);
-      setSchoolInfo(next.pengaturanSekolah);
-      if (dbJson.syncStatus) setSyncStatus(dbJson.syncStatus);
-    }
-  }, []);
+  // Real-time background sync watcher (polls lightweight /api/sync-status every 4s while visible)
+  useEffect(() => {
+    if (!token || !currentUser) return;
+    let active = true;
+
+    const checkServerUpdates = async () => {
+      if (!active || document.visibilityState === 'hidden') return;
+      const authToken = tokenRef.current;
+      if (!authToken) return;
+      try {
+        const res = await fetch('/api/sync-status', {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (!active) return;
+        if (res.status === 401) {
+          clearAppSession();
+          setToken(null);
+          setCurrentUser(null);
+          return;
+        }
+        const json = await safeJson(res);
+        if (!res.ok || !json?.ok) return;
+
+        const serverVersion = typeof json.dbVersion === 'number' ? json.dbVersion : 0;
+        if (json.syncStatus && !oauthSyncPromiseRef.current) {
+          setSyncStatus(json.syncStatus);
+          if (typeof json.syncStatus.syncedVersion === 'number') {
+            lastSyncedVersionRef.current = Math.max(
+              lastSyncedVersionRef.current,
+              json.syncStatus.syncedVersion
+            );
+          }
+        }
+
+        if (serverVersion > dbVersionRef.current) {
+          const refreshed = await loadDbWithToken(authToken);
+          if (refreshed && active) {
+            const latestDb = dbRef.current;
+            const sheetId = extractSpreadsheetId(
+              latestDb.pengaturanSekolah.google_spreadsheet_id || ''
+            );
+            if (
+              currentUserRef.current?.role === 'Admin' &&
+              googleConnectedRef.current &&
+              latestDb.pengaturanSekolah.auto_sync_sheets !== false &&
+              sheetId &&
+              dbVersionRef.current > lastSyncedVersionRef.current
+            ) {
+              void runDirectOAuthSync(latestDb, sheetId, dbVersionRef.current, true);
+            }
+          }
+        } else if (
+          currentUserRef.current?.role === 'Admin' &&
+          googleConnectedRef.current &&
+          dbRef.current.pengaturanSekolah.auto_sync_sheets !== false &&
+          extractSpreadsheetId(dbRef.current.pengaturanSekolah.google_spreadsheet_id || '') &&
+          serverVersion > lastSyncedVersionRef.current &&
+          !oauthSyncPromiseRef.current
+        ) {
+          const sheetId = extractSpreadsheetId(
+            dbRef.current.pengaturanSekolah.google_spreadsheet_id || ''
+          );
+          void runDirectOAuthSync(dbRef.current, sheetId, serverVersion, true);
+        }
+      } catch {
+        // Ignore transient background poll errors
+      }
+    };
+
+    const intervalId = setInterval(() => {
+      void checkServerUpdates();
+    }, 4000);
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void checkServerUpdates();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      active = false;
+      clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [token, currentUser, loadDbWithToken, runDirectOAuthSync]);
 
   const login = useCallback(
     async (username: string, password: string): Promise<{ ok: boolean; error?: string }> => {
       try {
+        const cleanUsername = username.trim().replace(/^@+/, '').toLowerCase();
+        const cleanPassword = password.replace(/[\r\n]+/g, '');
         const res = await fetch('/api/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, password }),
+          body: JSON.stringify({ username: cleanUsername, password: cleanPassword }),
         });
         const data = await safeJson(res);
+        if (typeof data?.adminClaimed === 'boolean') {
+          setAdminClaimed(data.adminClaimed);
+        }
         if (!res.ok || !data?.ok) {
           return {
             ok: false,
@@ -219,14 +682,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           };
         }
         if (data.data) {
-          const next = withDefaultGasUrl(data.data);
+          const next = data.data as SchoolDatabase;
           dbRef.current = next;
           setDb(next);
           setSchoolInfo(next.pengaturanSekolah);
+          if (typeof data.dbVersion === 'number') {
+            dbVersionRef.current = data.dbVersion;
+          }
           if (data.syncStatus) setSyncStatus(data.syncStatus);
         } else {
           await loadDbWithToken(data.token);
         }
+        saveAppSession(data.token, data.user);
         setToken(data.token);
         setCurrentUser(data.user);
         addToast(`Selamat datang, ${data.user.nama_lengkap}`, 'success');
@@ -241,14 +708,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const setupAdmin = useCallback(
     async (payload: SetupAdminPayload): Promise<{ ok: boolean; error?: string }> => {
       try {
+        const cleanPayload: SetupAdminPayload = {
+          ...payload,
+          username: payload.username.trim().replace(/^@+/, '').toLowerCase(),
+          password: payload.password.replace(/[\r\n]+/g, ''),
+          nama_lengkap: payload.nama_lengkap.trim(),
+          no_hp: payload.no_hp?.trim() || '',
+        };
         const res = await fetch('/api/setup-admin', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          body: JSON.stringify(cleanPayload),
         });
         const data = await safeJson(res);
         if (!res.ok || !data?.ok) {
-          if (res.status === 403) setAdminClaimed(true);
+          if (typeof data?.adminClaimed === 'boolean') {
+            setAdminClaimed(data.adminClaimed);
+          } else if (res.status === 403) {
+            setAdminClaimed(true);
+          }
           return {
             ok: false,
             error:
@@ -260,14 +738,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         setAdminClaimed(true);
         if (data.data) {
-          const next = withDefaultGasUrl(data.data);
+          const next = data.data as SchoolDatabase;
           dbRef.current = next;
           setDb(next);
           setSchoolInfo(next.pengaturanSekolah);
+          if (typeof data.dbVersion === 'number') {
+            dbVersionRef.current = data.dbVersion;
+          }
           if (data.syncStatus) setSyncStatus(data.syncStatus);
         } else {
           await loadDbWithToken(data.token);
         }
+        saveAppSession(data.token, data.user);
         setToken(data.token);
         setCurrentUser(data.user);
         triggerCelebration('Akun Admin siap!');
@@ -282,165 +764,238 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const createUserByAdmin = useCallback(
     async (payload: CreateUserByAdminPayload): Promise<{ ok: boolean; error?: string }> => {
-      if (!token) return { ok: false, error: 'Sesi berakhir.' };
-      try {
-        const res = await fetch('/api/admin/users', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify(payload),
-        });
-        const data = await safeJson(res);
-        if (!res.ok || !data?.ok || !data.user) {
-          const msg = data?.error || 'Gagal membuat akun pengguna.';
+      return enqueueMutation(async () => {
+        const authToken = tokenRef.current;
+        if (!authToken) return { ok: false, error: 'Sesi berakhir. Silakan masuk kembali.' };
+        setSaving(true);
+        try {
+          const res = await fetch('/api/admin/users', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${authToken}`,
+            },
+            body: JSON.stringify(payload),
+          });
+          const data = await safeJson(res);
+          if (res.status === 401) {
+            clearAppSession();
+            setToken(null);
+            setCurrentUser(null);
+            addToast('Sesi login berakhir. Silakan masuk kembali.', 'error');
+            return { ok: false, error: 'Sesi login berakhir.' };
+          }
+          if (!res.ok || !data?.ok || !data.user) {
+            const msg = data?.error || 'Gagal membuat akun pengguna.';
+            addToast(msg, 'error');
+            return { ok: false, error: msg };
+          }
+          const nextDb: SchoolDatabase = {
+            ...dbRef.current,
+            users: [...dbRef.current.users, data.user],
+          };
+          dbRef.current = nextDb;
+          setDb(nextDb);
+          if (typeof data.dbVersion === 'number') {
+            dbVersionRef.current = data.dbVersion;
+          }
+          if (data.syncStatus) setSyncStatus(data.syncStatus);
+          addToast(`Akun ${data.user.nama_lengkap} berhasil dibuat.`, 'success');
+          scheduleRealtimeOAuthSync(nextDb, data.dbVersion);
+          return { ok: true };
+        } catch {
+          const msg = 'Tidak dapat terhubung ke server aplikasi.';
           addToast(msg, 'error');
           return { ok: false, error: msg };
+        } finally {
+          setSaving(false);
         }
-        const nextDb: SchoolDatabase = {
-          ...dbRef.current,
-          users: [...dbRef.current.users, data.user],
-        };
-        dbRef.current = nextDb;
-        setDb(nextDb);
-        addToast(`Akun ${data.user.nama_lengkap} berhasil dibuat.`, 'success');
-        return { ok: true };
-      } catch {
-        const msg = 'Tidak dapat terhubung ke server aplikasi.';
-        addToast(msg, 'error');
-        return { ok: false, error: msg };
-      }
+      });
     },
-    [token, addToast]
+    [enqueueMutation, addToast, scheduleRealtimeOAuthSync]
   );
 
   const deleteUserByAdmin = useCallback(
     async (userId: string): Promise<{ ok: boolean; error?: string }> => {
-      if (!token) return { ok: false, error: 'Sesi berakhir.' };
-      setSaving(true);
-      try {
-        const res = await fetch('/api/admin/users', {
-          method: 'DELETE',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ user_id: userId }),
-        });
-        const data = await safeJson(res);
-        if (!res.ok || !data?.ok) {
-          const msg = data?.error || 'Gagal menghapus akun pengguna.';
+      return enqueueMutation(async () => {
+        const authToken = tokenRef.current;
+        if (!authToken) return { ok: false, error: 'Sesi berakhir. Silakan masuk kembali.' };
+        setSaving(true);
+        try {
+          const res = await fetch('/api/admin/users', {
+            method: 'DELETE',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${authToken}`,
+            },
+            body: JSON.stringify({ user_id: userId }),
+          });
+          const data = await safeJson(res);
+          if (res.status === 401) {
+            clearAppSession();
+            setToken(null);
+            setCurrentUser(null);
+            addToast('Sesi login berakhir. Silakan masuk kembali.', 'error');
+            return { ok: false, error: 'Sesi login berakhir.' };
+          }
+          if (!res.ok || !data?.ok) {
+            const msg = data?.error || 'Gagal menghapus akun pengguna.';
+            addToast(msg, 'error');
+            return { ok: false, error: msg };
+          }
+          const nextDb: SchoolDatabase = {
+            ...dbRef.current,
+            users: Array.isArray(data.users)
+              ? data.users
+              : dbRef.current.users.filter((u) => u.user_id !== userId),
+            siswa: Array.isArray(data.siswa)
+              ? data.siswa
+              : dbRef.current.siswa.map((s) =>
+                  s.ortu_user_id === userId ? { ...s, ortu_user_id: '' } : s
+                ),
+            riwayatKelas: Array.isArray(data.riwayatKelas)
+              ? data.riwayatKelas
+              : dbRef.current.riwayatKelas.map((r) =>
+                  r.wali_kelas_id === userId ? { ...r, wali_kelas_id: '' } : r
+                ),
+          };
+          dbRef.current = nextDb;
+          setDb(nextDb);
+          if (typeof data.dbVersion === 'number') {
+            dbVersionRef.current = data.dbVersion;
+          }
+          if (data.syncStatus) setSyncStatus(data.syncStatus);
+          addToast('Akun pengguna berhasil dihapus.', 'success');
+          scheduleRealtimeOAuthSync(nextDb, data.dbVersion);
+          return { ok: true };
+        } catch {
+          const msg = 'Tidak dapat terhubung ke server aplikasi.';
           addToast(msg, 'error');
           return { ok: false, error: msg };
+        } finally {
+          setSaving(false);
         }
-        const nextDb: SchoolDatabase = {
-          ...dbRef.current,
-          users: Array.isArray(data.users)
-            ? data.users
-            : dbRef.current.users.filter((u) => u.user_id !== userId),
-          siswa: Array.isArray(data.siswa)
-            ? data.siswa
-            : dbRef.current.siswa.map((s) =>
-                s.ortu_user_id === userId ? { ...s, ortu_user_id: '' } : s
-              ),
-          riwayatKelas: Array.isArray(data.riwayatKelas)
-            ? data.riwayatKelas
-            : dbRef.current.riwayatKelas.map((r) =>
-                r.wali_kelas_id === userId ? { ...r, wali_kelas_id: '' } : r
-              ),
-        };
-        dbRef.current = nextDb;
-        setDb(nextDb);
-        if (data.syncStatus) setSyncStatus(data.syncStatus);
-        addToast('Akun pengguna berhasil dihapus.', 'success');
-        return { ok: true };
-      } catch {
-        const msg = 'Tidak dapat terhubung ke server aplikasi.';
-        addToast(msg, 'error');
-        return { ok: false, error: msg };
-      } finally {
-        setSaving(false);
-      }
+      });
     },
-    [token, addToast]
+    [enqueueMutation, addToast, scheduleRealtimeOAuthSync]
   );
 
   const logout = useCallback(async () => {
-    if (token) {
+    if (oauthSyncTimerRef.current) {
+      clearTimeout(oauthSyncTimerRef.current);
+      oauthSyncTimerRef.current = null;
+    }
+    const authToken = tokenRef.current;
+    if (authToken) {
       try {
         await fetch('/api/logout', {
           method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
+          headers: { Authorization: `Bearer ${authToken}` },
         });
       } catch {
         // Ignore network errors during logout
       }
     }
+    clearAppSession();
     setToken(null);
     setCurrentUser(null);
-  }, [token]);
+  }, []);
 
   const changePassword = useCallback(
     async (lama: string, baru: string): Promise<{ ok: boolean; error?: string }> => {
-      if (!token) return { ok: false, error: 'Sesi berakhir.' };
+      const authToken = tokenRef.current;
+      if (!authToken) return { ok: false, error: 'Sesi berakhir.' };
       try {
         const res = await fetch('/api/change-password', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
+            Authorization: `Bearer ${authToken}`,
           },
           body: JSON.stringify({ lama, baru }),
         });
-        const data = await res.json();
-        if (!res.ok || !data.ok) {
-          return { ok: false, error: data.error || 'Gagal mengganti password.' };
+        const data = await safeJson(res);
+        if (!res.ok || !data?.ok) {
+          return { ok: false, error: data?.error || 'Gagal mengganti password.' };
         }
         setToken(data.token);
+        if (currentUserRef.current) {
+          saveAppSession(data.token, currentUserRef.current);
+        }
         addToast('Password berhasil diganti', 'success');
         return { ok: true };
       } catch {
         return { ok: false, error: 'Tidak dapat terhubung ke server.' };
       }
     },
-    [token, addToast]
+    [addToast]
   );
 
   const updateDb = useCallback(
     async (
       updater: (prev: SchoolDatabase) => SchoolDatabase,
       toastText?: string,
-      options?: { graduatedSiswaIds?: string[] }
-    ) => {
-      const finalDb = withDefaultGasUrl(updater(dbRef.current));
-      dbRef.current = finalDb;
-      setDb(finalDb);
-      setSchoolInfo(finalDb.pengaturanSekolah);
+      options?: { graduatedSiswaIds?: string[]; skipOAuthAutoSync?: boolean }
+    ): Promise<boolean> => {
+      return enqueueMutation(async () => {
+        const prevDb = dbRef.current;
+        const finalDb = updater(prevDb);
+        dbRef.current = finalDb;
+        setDb(finalDb);
+        setSchoolInfo(finalDb.pengaturanSekolah);
 
-      if (!token) return;
-      setSaving(true);
-      try {
-        const payload =
-          options?.graduatedSiswaIds && options.graduatedSiswaIds.length > 0
-            ? { ...finalDb, graduatedSiswaIds: options.graduatedSiswaIds }
-            : finalDb;
-        const res = await fetch('/api/db', {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify(payload),
-        });
-        const json = await safeJson(res);
-        if (!res.ok || !json?.ok) {
-          addToast(json?.error || 'Gagal menyimpan perubahan ke server.', 'error');
-        } else {
+        const authToken = tokenRef.current;
+        if (!authToken) return false;
+
+        setSaving(true);
+        try {
+          const payload =
+            options?.graduatedSiswaIds && options.graduatedSiswaIds.length > 0
+              ? { ...finalDb, graduatedSiswaIds: options.graduatedSiswaIds }
+              : finalDb;
+          const res = await fetch('/api/db', {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${authToken}`,
+            },
+            body: JSON.stringify(payload),
+          });
+          const json = await safeJson(res);
+
+          if (res.status === 401) {
+            // Rollback optimistic update & clear stale session
+            dbRef.current = prevDb;
+            setDb(prevDb);
+            setSchoolInfo(prevDb.pengaturanSekolah);
+            clearAppSession();
+            setToken(null);
+            setCurrentUser(null);
+            addToast('Sesi login berakhir. Perubahan dibatalkan, silakan masuk kembali.', 'error');
+            return false;
+          }
+
+          if (!res.ok || !json?.ok) {
+            // Rollback optimistic state so UI never lies about failed persistence
+            dbRef.current = prevDb;
+            setDb(prevDb);
+            setSchoolInfo(prevDb.pengaturanSekolah);
+            addToast(json?.error || 'Gagal menyimpan perubahan ke server.', 'error');
+            return false;
+          }
+
+          const authoritativeDb = (json.data as SchoolDatabase) || finalDb;
+          dbRef.current = authoritativeDb;
+          setDb(authoritativeDb);
+          setSchoolInfo(authoritativeDb.pengaturanSekolah);
+          if (typeof json.dbVersion === 'number') {
+            dbVersionRef.current = json.dbVersion;
+          }
           if (json.syncStatus) setSyncStatus(json.syncStatus);
           if (toastText) addToast(toastText, 'success');
+
           if (
-            finalDb.pengaturanSekolah.gas_webapp_url &&
+            authoritativeDb.pengaturanSekolah.gas_webapp_url &&
             json.syncStatus?.lastError
           ) {
             addToast(
@@ -448,20 +1003,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               'error'
             );
           }
+
+          if (!options?.skipOAuthAutoSync) {
+            scheduleRealtimeOAuthSync(authoritativeDb, json.dbVersion);
+          }
+          return true;
+        } catch {
+          dbRef.current = prevDb;
+          setDb(prevDb);
+          setSchoolInfo(prevDb.pengaturanSekolah);
+          addToast('Koneksi terputus saat menyimpan data. Perubahan dibatalkan.', 'error');
+          return false;
+        } finally {
+          setSaving(false);
         }
-      } catch {
-        addToast('Koneksi terputus saat menyimpan data.', 'error');
-      } finally {
-        setSaving(false);
-      }
+      });
     },
-    [token, addToast]
+    [enqueueMutation, addToast, scheduleRealtimeOAuthSync]
   );
 
   const deleteSiswaWithCleanup = useCallback(
     async (siswaId: string) => {
       const target = dbRef.current.siswa.find((s) => s.siswa_id === siswaId);
-      const label = target ? `Data murid ${target.nama_anak} dan seluruh catatannya dihapus.` : 'Data murid dihapus.';
+      const label = target
+        ? `Data murid ${target.nama_anak} dan seluruh catatannya dihapus.`
+        : 'Data murid dihapus.';
       await updateDb((prev) => purgeStudentsFromDatabase(prev, [siswaId]), label);
     },
     [updateDb]
@@ -476,6 +1042,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         pengaturanSekolah: {
           ...fresh.pengaturanSekolah,
           admin_claimed: prev.pengaturanSekolah.admin_claimed || keepAdmins.length > 0,
+          gas_webapp_url: prev.pengaturanSekolah.gas_webapp_url || '',
+          gas_sync_key: prev.pengaturanSekolah.gas_sync_key || fresh.pengaturanSekolah.gas_sync_key,
+          google_spreadsheet_id: prev.pengaturanSekolah.google_spreadsheet_id || '',
+          google_spreadsheet_url: prev.pengaturanSekolah.google_spreadsheet_url || '',
+          auto_sync_sheets: prev.pengaturanSekolah.auto_sync_sheets ?? true,
         },
         users: [
           ...keepAdmins,
@@ -512,97 +1083,265 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const testSheetsConnection = useCallback(
     async (url?: string, syncKey?: string) => {
-      if (!token) return { ok: false, message: 'Sesi berakhir.' };
+      const authToken = tokenRef.current;
+      if (!authToken) return { ok: false, message: 'Sesi berakhir.' };
       try {
         const res = await fetch('/api/sheets/test', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
+            Authorization: `Bearer ${authToken}`,
           },
           body: JSON.stringify({ url, syncKey }),
         });
-        const json = await res.json();
-        if (json.syncStatus) setSyncStatus(json.syncStatus);
-        if (res.ok && json.ok) {
+        const json = await safeJson(res);
+        if (json?.syncStatus) setSyncStatus(json.syncStatus);
+        if (res.ok && json?.ok) {
           const msg = `Terhubung ke Google Sheet (${json.result?.sheets || 0} tab sheet).`;
           addToast(msg, 'success');
           return { ok: true, message: msg };
         }
-        const errMsg = json.error || 'Gagal terhubung ke Google Sheets.';
+        const errMsg = json?.error || 'Gagal terhubung ke Google Sheets.';
         addToast(errMsg, 'error');
         return { ok: false, message: errMsg };
       } catch {
         return { ok: false, message: 'Gagal menghubungi server aplikasi.' };
       }
     },
-    [token, addToast]
+    [addToast]
+  );
+
+  const connectGoogleSheets = useCallback(async (): Promise<boolean> => {
+    try {
+      const result = await googleWorkspaceSignIn();
+      if (!result) return false;
+      setGoogleUser(result.user);
+      setGoogleConnected(true);
+      setNeedsGoogleReauth(false);
+      addToast(
+        `Terhubung dengan Google: ${result.user.email || result.user.displayName}`,
+        'success'
+      );
+
+      if (tokenRef.current) {
+        await loadDbWithToken(tokenRef.current);
+      }
+
+      const sheetId = extractSpreadsheetId(
+        dbRef.current.pengaturanSekolah.google_spreadsheet_id || ''
+      );
+      if (sheetId && dbRef.current.pengaturanSekolah.auto_sync_sheets !== false) {
+        const synced = await runDirectOAuthSync(
+          dbRef.current,
+          sheetId,
+          dbVersionRef.current,
+          true
+        );
+        if (synced) {
+          addToast('Sinkronisasi real-time Google Sheets aktif & diperbarui.', 'success');
+        }
+      }
+      return true;
+    } catch (err) {
+      addToast(
+        err instanceof Error ? err.message : 'Gagal masuk dengan akun Google.',
+        'error'
+      );
+      return false;
+    }
+  }, [addToast, loadDbWithToken, runDirectOAuthSync]);
+
+  const disconnectGoogleSheets = useCallback(async () => {
+    if (oauthSyncTimerRef.current) {
+      clearTimeout(oauthSyncTimerRef.current);
+      oauthSyncTimerRef.current = null;
+    }
+    await googleWorkspaceSignOut();
+    setGoogleUser(null);
+    setGoogleConnected(false);
+    if (dbRef.current.pengaturanSekolah.google_spreadsheet_id?.trim()) {
+      setNeedsGoogleReauth(true);
+    }
+    addToast('Koneksi akun Google diputuskan.', 'info');
+  }, [addToast]);
+
+  const pullDirectFromSpreadsheet = useCallback(
+    async (overrideSpreadsheetId?: string): Promise<boolean> => {
+      const sheetId = extractSpreadsheetId(
+        overrideSpreadsheetId || dbRef.current.pengaturanSekolah.google_spreadsheet_id || ''
+      );
+      if (!sheetId) {
+        addToast('Belum ada ID Google Spreadsheet yang dipilih.', 'error');
+        return false;
+      }
+      const accessToken = await getWorkspaceAccessToken();
+      if (!accessToken) {
+        setNeedsGoogleReauth(true);
+        addToast('Silakan masuk dengan akun Google terlebih dahulu.', 'error');
+        return false;
+      }
+
+      setGoogleSyncing(true);
+      setSaving(true);
+      try {
+        const pulled = await pullSchoolDatabaseFromSpreadsheet(accessToken, sheetId, dbRef.current);
+        const savedOk = await updateDb(
+          () => ({
+            ...pulled.db,
+            pengaturanSekolah: {
+              ...pulled.db.pengaturanSekolah,
+              google_spreadsheet_id: pulled.meta.spreadsheetId,
+              google_spreadsheet_url: pulled.meta.spreadsheetUrl,
+            },
+          }),
+          `Data berhasil ditarik dari "${pulled.meta.title}".`,
+          { skipOAuthAutoSync: true }
+        );
+        if (savedOk) {
+          await markDirectOAuthSynced(pulled.meta);
+          triggerCelebration('Data Sheet ditarik!');
+        }
+        return savedOk;
+      } catch (err) {
+        addToast(
+          err instanceof Error ? err.message : 'Gagal menarik data dari Google Spreadsheet.',
+          'error'
+        );
+        return false;
+      } finally {
+        setGoogleSyncing(false);
+        setSaving(false);
+      }
+    },
+    [addToast, markDirectOAuthSynced, triggerCelebration, updateDb]
   );
 
   const pushToSheets = useCallback(async () => {
-    if (!token) return;
+    const authToken = tokenRef.current;
+    if (!authToken) return;
+
+    const currentDb = dbRef.current;
+    const directSheetId = extractSpreadsheetId(
+      currentDb.pengaturanSekolah.google_spreadsheet_id || ''
+    );
+    const gasUrl = currentDb.pengaturanSekolah.gas_webapp_url?.trim() || getClientDefaultGasUrl();
+
+    if (!directSheetId && !gasUrl) {
+      addToast(
+        'Belum ada Google Sheets yang terhubung. Buka menu Sekolah untuk menghubungkan Google Spreadsheet.',
+        'error'
+      );
+      return;
+    }
+
     setSaving(true);
     try {
-      const effectiveUrl =
-        dbRef.current.pengaturanSekolah.gas_webapp_url || getClientDefaultGasUrl();
-      const res = await fetch('/api/sheets/push', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          url: effectiveUrl,
-          syncKey: dbRef.current.pengaturanSekolah.gas_sync_key,
-          dbSnapshot: currentUser?.role === 'Admin' ? dbRef.current : undefined,
-        }),
-      });
-      const json = await safeJson(res);
-      if (json?.syncStatus) setSyncStatus(json.syncStatus);
-      if (res.ok && json?.ok) {
-        triggerCelebration('Tersinkron ke Sheet!');
-        addToast('Seluruh data berhasil dikirim ke Google Sheets.', 'success');
-      } else {
-        addToast(json?.error || 'Gagal mengirim ke Google Sheets.', 'error');
+      let didDirectSuccess = false;
+      if (directSheetId) {
+        const accessToken = await getWorkspaceAccessToken();
+        if (accessToken) {
+          didDirectSuccess = await runDirectOAuthSync(
+            currentDb,
+            directSheetId,
+            dbVersionRef.current,
+            true
+          );
+          if (didDirectSuccess && !gasUrl) {
+            triggerCelebration('Tersinkron ke Sheet!');
+            addToast('Seluruh data berhasil dikirim ke Google Spreadsheet.', 'success');
+            return;
+          }
+        } else if (!gasUrl) {
+          setNeedsGoogleReauth(true);
+          addToast(
+            'Sesi Google berakhir. Klik "Sambungkan Google" di bagian atas untuk mengirim langsung ke Spreadsheet.',
+            'error'
+          );
+          return;
+        }
+      }
+
+      if (gasUrl) {
+        const res = await fetch('/api/sheets/push', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`,
+          },
+          body: JSON.stringify({
+            url: gasUrl,
+            syncKey: currentDb.pengaturanSekolah.gas_sync_key,
+            dbSnapshot: currentUserRef.current?.role === 'Admin' ? currentDb : undefined,
+          }),
+        });
+        const json = await safeJson(res);
+        if (json?.syncStatus) setSyncStatus(json.syncStatus);
+        if (res.ok && json?.ok) {
+          triggerCelebration('Tersinkron ke Sheet!');
+          addToast('Seluruh data berhasil dikirim ke Google Sheets.', 'success');
+        } else if (didDirectSuccess) {
+          triggerCelebration('Tersinkron ke Sheet!');
+          addToast('Data terkirim ke Google Spreadsheet langsung.', 'success');
+        } else {
+          addToast(json?.error || 'Gagal mengirim ke Google Sheets.', 'error');
+        }
+      } else if (!didDirectSuccess) {
+        addToast('Gagal mengirim ke Google Spreadsheet. Periksa koneksi Google Anda.', 'error');
       }
     } catch {
       addToast('Koneksi terputus saat sinkronisasi.', 'error');
     } finally {
       setSaving(false);
     }
-  }, [token, currentUser?.role, addToast, triggerCelebration]);
+  }, [addToast, runDirectOAuthSync, triggerCelebration]);
 
   const pullFromSheets = useCallback(async () => {
-    if (!token) return;
+    const authToken = tokenRef.current;
+    if (!authToken) return;
+    const currentDb = dbRef.current;
+    const gasUrl = currentDb.pengaturanSekolah.gas_webapp_url?.trim() || '';
+    const directSheetId = extractSpreadsheetId(
+      currentDb.pengaturanSekolah.google_spreadsheet_id || ''
+    );
+
+    if (!gasUrl && directSheetId) {
+      await pullDirectFromSpreadsheet(directSheetId);
+      return;
+    }
+
     setSaving(true);
     try {
       const res = await fetch('/api/sheets/pull', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${authToken}`,
         },
         body: JSON.stringify({
-          url: dbRef.current.pengaturanSekolah.gas_webapp_url,
-          syncKey: dbRef.current.pengaturanSekolah.gas_sync_key,
+          url: gasUrl,
+          syncKey: currentDb.pengaturanSekolah.gas_sync_key,
         }),
       });
-      const json = await res.json();
-      if (json.syncStatus) setSyncStatus(json.syncStatus);
-      if (res.ok && json.ok && json.data) {
-        dbRef.current = json.data;
-        setDb(json.data);
-        setSchoolInfo(json.data.pengaturanSekolah);
+      const json = await safeJson(res);
+      if (json?.syncStatus) setSyncStatus(json.syncStatus);
+      if (res.ok && json?.ok && json.data) {
+        const nextDb = json.data as SchoolDatabase;
+        dbRef.current = nextDb;
+        setDb(nextDb);
+        setSchoolInfo(nextDb.pengaturanSekolah);
+        if (typeof json.dbVersion === 'number') {
+          dbVersionRef.current = json.dbVersion;
+        }
         addToast('Data terbaru berhasil ditarik dari Google Sheets.', 'success');
       } else {
-        addToast(json.error || 'Gagal menarik data dari Google Sheets.', 'error');
+        addToast(json?.error || 'Gagal menarik data dari Google Sheets.', 'error');
       }
     } catch {
       addToast('Koneksi terputus saat menarik data.', 'error');
     } finally {
       setSaving(false);
     }
-  }, [token, addToast]);
+  }, [addToast, pullDirectFromSpreadsheet]);
 
   return (
     <AppContext.Provider
@@ -616,10 +1355,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         saving,
         toasts,
         syncStatus,
+        googleUser,
+        googleConnected,
+        googleSyncing,
+        needsGoogleReauth,
         celebration,
         triggerCelebration,
         login,
         setupAdmin,
+        refreshSchoolInfo,
         createUserByAdmin,
         deleteUserByAdmin,
         deleteSiswaWithCleanup,
@@ -633,6 +1377,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         testSheetsConnection,
         pushToSheets,
         pullFromSheets,
+        connectGoogleSheets,
+        disconnectGoogleSheets,
+        syncDirectToSpreadsheet,
+        pullDirectFromSpreadsheet,
+        markDirectOAuthSynced,
       }}
     >
       {children}

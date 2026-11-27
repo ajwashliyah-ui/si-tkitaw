@@ -65,14 +65,23 @@ export const AdminPengaturanView: React.FC = () => {
     e.preventDefault();
     if (!form.nama_sekolah.trim()) return;
     const cleaned = buildCleanedForm();
-    await updateDb(
+    const ok = await updateDb(
       (prev) => ({
         ...prev,
-        pengaturanSekolah: cleaned,
+        pengaturanSekolah: {
+          ...prev.pengaturanSekolah,
+          ...cleaned,
+          google_spreadsheet_id: prev.pengaturanSekolah.google_spreadsheet_id,
+          google_spreadsheet_url: prev.pengaturanSekolah.google_spreadsheet_url,
+          auto_sync_sheets: prev.pengaturanSekolah.auto_sync_sheets,
+          admin_claimed: prev.pengaturanSekolah.admin_claimed,
+        },
       }),
       'Pengaturan sekolah tersimpan.'
     );
-    triggerCelebration('Pengaturan sekolah tersimpan!');
+    if (ok) {
+      triggerCelebration('Pengaturan sekolah tersimpan!');
+    }
   };
 
   const handleSaveAndTestSheets = async () => {
@@ -81,7 +90,14 @@ export const AdminPengaturanView: React.FC = () => {
     setTestingConn(true);
     await updateDb((prev) => ({
       ...prev,
-      pengaturanSekolah: cleaned,
+      pengaturanSekolah: {
+        ...prev.pengaturanSekolah,
+        ...cleaned,
+        google_spreadsheet_id: prev.pengaturanSekolah.google_spreadsheet_id,
+        google_spreadsheet_url: prev.pengaturanSekolah.google_spreadsheet_url,
+        auto_sync_sheets: prev.pengaturanSekolah.auto_sync_sheets,
+        admin_claimed: prev.pengaturanSekolah.admin_claimed,
+      },
     }));
     const res = await testSheetsConnection(cleaned.gas_webapp_url, cleaned.gas_sync_key);
     setTestingConn(false);

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Eye,
   EyeOff,
@@ -10,6 +10,9 @@ import {
   UploadCloud,
   FileSpreadsheet,
   Download,
+  Copy,
+  CheckCircle2,
+  KeyRound,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import {
@@ -22,12 +25,18 @@ import {
 } from '../../types';
 import { getMasterKelasList, isKelasLanjutan } from '../../utils/kelas';
 import { exportSiswaDapodikExcel } from '../../utils/dapodikImport';
+import {
+  AutoParentCredentials,
+  buildAutoParentUsername,
+  createStudentWithOptionalAutoParent,
+} from '../../utils/parentAccountAuto';
 import { DapodikImportModal } from './DapodikImportModal';
 
 export const AdminSiswaUsersView: React.FC = () => {
   const {
     db,
     currentUser,
+    saving,
     updateDb,
     createUserByAdmin,
     deleteUserByAdmin,
@@ -40,14 +49,23 @@ export const AdminSiswaUsersView: React.FC = () => {
 
   const kelasList = useMemo(() => getMasterKelasList(db), [db]);
 
-  // Form Siswa Baru
+  // Form Siswa Baru (Otomatis buat & hubungkan akun Orang Tua)
   const [nis, setNis] = useState('');
   const [namaAnak, setNamaAnak] = useState('');
   const [jk, setJk] = useState<JenisKelamin>('L');
   const [tglLahir, setTglLahir] = useState('2021-05-10');
   const [kelasAktif, setKelasAktif] = useState<KelasType>(() => kelasList[0]?.nama_kelas || 'Kelas A');
+  const [parentLinkMode, setParentLinkMode] = useState<'auto' | 'existing'>('auto');
   const [ortuUserId, setOrtuUserId] = useState('');
+  const [autoParentName, setAutoParentName] = useState('');
+  const [autoParentUsername, setAutoParentUsername] = useState('');
+  const [usernameEditedManually, setUsernameEditedManually] = useState(false);
+  const [autoParentPassword, setAutoParentPassword] = useState('123456');
+  const [showAutoPassword, setShowAutoPassword] = useState(false);
+  const [autoParentNoHp, setAutoParentNoHp] = useState('');
   const [trackB, setTrackB] = useState<TrackKelasB>('TRACK_1');
+  const [submittingSiswa, setSubmittingSiswa] = useState(false);
+  const [lastCreatedCreds, setLastCreatedCreds] = useState<AutoParentCredentials | null>(null);
 
   // Form Akun Baru (khusus Guru & Orang Tua, dibuat oleh Admin)
   const [username, setUsername] = useState('');
@@ -61,6 +79,10 @@ export const AdminSiswaUsersView: React.FC = () => {
 
   const [confirmDeleteSiswa, setConfirmDeleteSiswa] = useState<Siswa | null>(null);
   const [confirmDeleteUser, setConfirmDeleteUser] = useState<User | null>(null);
+  const [resetPasswordUser, setResetPasswordUser] = useState<User | null>(null);
+  const [resetNewPassword, setResetNewPassword] = useState('');
+  const [showResetPassword, setShowResetPassword] = useState(false);
+  const [resettingPassword, setResettingPassword] = useState(false);
   const [deletingAction, setDeletingAction] = useState(false);
   const [showDapodikModal, setShowDapodikModal] = useState(false);
 
@@ -71,50 +93,118 @@ export const AdminSiswaUsersView: React.FC = () => {
     [db.tahunAjaran]
   );
 
+  // Sarankan username orang tua otomatis saat NIS/Nama Anak diketik (kecuali admin sudah edit manual)
+  useEffect(() => {
+    if (parentLinkMode !== 'auto' || usernameEditedManually) return;
+    if (!nis.trim() && !namaAnak.trim()) {
+      setAutoParentUsername('');
+      return;
+    }
+    const suggested = buildAutoParentUsername(
+      namaAnak,
+      nis,
+      db.users.map((u) => u.username)
+    );
+    setAutoParentUsername(suggested);
+  }, [nis, namaAnak, parentLinkMode, usernameEditedManually, db.users]);
+
+  const handleCopyCredentials = async (creds: AutoParentCredentials) => {
+    const text = [
+      `Akun Orang Tua ${db.pengaturanSekolah.nama_sekolah}`,
+      `Anak: ${creds.nama_anak} (NIS ${creds.nis})`,
+      `Nama Akun: ${creds.nama_lengkap}`,
+      `Username: ${creds.username}`,
+      `Password: ${creds.password}`,
+    ].join('\n');
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        addToast('Info login orang tua disalin ke clipboard.', 'success');
+      } else {
+        addToast(`Username: ${creds.username} · Password: ${creds.password}`, 'info');
+      }
+    } catch {
+      addToast(`Username: ${creds.username} · Password: ${creds.password}`, 'info');
+    }
+  };
+
   const handleAddSiswa = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!nis.trim() || !namaAnak.trim()) {
       addToast('NIS dan nama anak wajib diisi.', 'error');
       return;
     }
-    const newId = `SIS-${Date.now().toString().slice(-5)}`;
-    const newSiswa: Siswa = {
-      siswa_id: newId,
-      nis: nis.trim(),
-      nama_anak: namaAnak.trim(),
-      jenis_kelamin: jk,
-      tanggal_lahir: tglLahir,
-      ortu_user_id: ortuUserId,
-      kelas_aktif: kelasAktif,
-      status_siswa: 'Aktif',
-      target_literasi_kelas_b: trackB,
-    };
+
+    const cleanAutoPass = autoParentPassword.replace(/[\r\n]+/g, '');
+    if (parentLinkMode === 'auto') {
+      const cleanUser = autoParentUsername.trim().replace(/^@+/, '').replace(/\s+/g, '').toLowerCase();
+      if (cleanUser) {
+        if (!/^[a-z0-9._-]{3,32}$/.test(cleanUser)) {
+          addToast(
+            'Username orang tua 3–32 karakter (huruf kecil, angka, titik, garis bawah, atau strip).',
+            'error'
+          );
+          return;
+        }
+        if (db.users.some((u) => u.username.toLowerCase() === cleanUser)) {
+          addToast('Username orang tua sudah dipakai akun lain. Gunakan username lain.', 'error');
+          return;
+        }
+      }
+      if (cleanAutoPass.length < 6) {
+        addToast('Password awal akun orang tua minimal 6 karakter.', 'error');
+        return;
+      }
+    }
 
     const wali = db.users.find((u) => u.role === 'Guru' && u.kelas_ampu === kelasAktif);
+    const created = createStudentWithOptionalAutoParent({
+      nis,
+      nama_anak: namaAnak,
+      jenis_kelamin: jk,
+      tanggal_lahir: tglLahir,
+      kelas_aktif: kelasAktif,
+      target_literasi_kelas_b: trackB,
+      existingUsers: db.users,
+      activeTa: activeTa ? { ta_id: activeTa.ta_id, nama_ta: activeTa.nama_ta } : undefined,
+      waliKelasId: wali?.user_id || '',
+      autoCreateParent: parentLinkMode === 'auto',
+      existingOrtuUserId: ortuUserId,
+      parentName: autoParentName,
+      parentUsername: autoParentUsername.trim().replace(/^@+/, '').replace(/\s+/g, '').toLowerCase(),
+      parentPassword: cleanAutoPass,
+      parentNoHp: autoParentNoHp,
+    });
 
-    await updateDb(
+    setSubmittingSiswa(true);
+    const toastMessage = created.newParentUser
+      ? `Data ${created.siswa.nama_anak} ditambahkan & akun orang tua (${created.newParentUser.username}) otomatis dibuat.`
+      : `Data ${created.siswa.nama_anak} ditambahkan.`;
+
+    const ok = await updateDb(
       (prev) => ({
         ...prev,
-        siswa: [...prev.siswa, newSiswa],
-        riwayatKelas: activeTa
-          ? [
-              ...prev.riwayatKelas,
-              {
-                riwayat_id: `RWY-${Date.now()}`,
-                siswa_id: newId,
-                ta_id: activeTa.ta_id,
-                nama_ta: activeTa.nama_ta,
-                kelas: kelasAktif,
-                wali_kelas_id: wali?.user_id || '',
-                status_akhir: 'Berjalan',
-              },
-            ]
+        users: created.newParentUser ? [...prev.users, created.newParentUser] : prev.users,
+        siswa: [...prev.siswa, created.siswa],
+        riwayatKelas: created.riwayat
+          ? [...prev.riwayatKelas, created.riwayat]
           : prev.riwayatKelas,
       }),
-      `Data ${newSiswa.nama_anak} ditambahkan.`
+      toastMessage
     );
-    setNis('');
-    setNamaAnak('');
+    setSubmittingSiswa(false);
+
+    if (ok) {
+      if (created.credentials) {
+        setLastCreatedCreds(created.credentials);
+      }
+      setNis('');
+      setNamaAnak('');
+      setAutoParentName('');
+      setAutoParentUsername('');
+      setUsernameEditedManually(false);
+      setAutoParentNoHp('');
+    }
   };
 
   const handleUpdateSiswaOrtu = async (siswaId: string, newOrtuId: string) => {
@@ -127,6 +217,53 @@ export const AdminSiswaUsersView: React.FC = () => {
       }),
       'Akun orang tua diperbarui.'
     );
+  };
+
+  const handleQuickAutoCreateParent = async (s: Siswa) => {
+    const cleanChild = s.nama_anak.trim() || 'Murid';
+    const suggestedUsername = buildAutoParentUsername(
+      cleanChild,
+      s.nis,
+      db.users.map((u) => u.username)
+    );
+    const defaultPassword = '123456';
+    const displayName = `Wali ${cleanChild}`.slice(0, 80);
+    const userId = `USR-ORT-${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 90 + 10)}`;
+
+    const newParentUser: User = {
+      user_id: userId,
+      username: suggestedUsername,
+      password: defaultPassword,
+      password_hash: '',
+      role: 'OrangTua',
+      nama_lengkap: displayName,
+      no_hp: '',
+      kelas_ampu: '',
+      status_aktif: true,
+    };
+
+    const ok = await updateDb(
+      (prev) => ({
+        ...prev,
+        users: [...prev.users, newParentUser],
+        siswa: prev.siswa.map((row) =>
+          row.siswa_id === s.siswa_id ? { ...row, ortu_user_id: userId } : row
+        ),
+      }),
+      `Akun orang tua (@${suggestedUsername}) dibuat & langsung terhubung dengan ${s.nama_anak}.`
+    );
+
+    if (ok) {
+      setLastCreatedCreds({
+        user_id: userId,
+        username: suggestedUsername,
+        password: defaultPassword,
+        nama_lengkap: displayName,
+        no_hp: '',
+        nama_anak: s.nama_anak,
+        nis: s.nis,
+      });
+    }
   };
 
   const handleUpdateSiswaKelas = async (siswaId: string, nextKelas: string) => {
@@ -161,8 +298,9 @@ export const AdminSiswaUsersView: React.FC = () => {
 
   const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanUser = username.trim().toLowerCase();
-    if (!cleanUser || !password || !namaLengkap.trim()) {
+    const cleanUser = username.trim().replace(/^@+/, '').replace(/\s+/g, '').toLowerCase();
+    const cleanPass = password.replace(/[\r\n]+/g, '');
+    if (!cleanUser || !cleanPass || !namaLengkap.trim()) {
       addToast('Username, password, dan nama lengkap wajib diisi.', 'error');
       return;
     }
@@ -170,7 +308,7 @@ export const AdminSiswaUsersView: React.FC = () => {
       addToast('Username 3–32 karakter (huruf kecil, angka, titik, garis bawah, atau strip).', 'error');
       return;
     }
-    if (password.length < 6) {
+    if (cleanPass.length < 6) {
       addToast('Password minimal 6 karakter.', 'error');
       return;
     }
@@ -182,7 +320,7 @@ export const AdminSiswaUsersView: React.FC = () => {
     setCreatingUser(true);
     const res = await createUserByAdmin({
       username: cleanUser,
-      password,
+      password: cleanPass,
       nama_lengkap: namaLengkap.trim(),
       role,
       no_hp: noHp.trim(),
@@ -227,20 +365,61 @@ export const AdminSiswaUsersView: React.FC = () => {
     }
   };
 
+  const handleResetUserPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetPasswordUser) return;
+    const cleanPass = resetNewPassword.replace(/[\r\n]+/g, '');
+    if (cleanPass.length < 6) {
+      addToast('Password baru minimal 6 karakter.', 'error');
+      return;
+    }
+    setResettingPassword(true);
+    const ok = await updateDb(
+      (prev) => ({
+        ...prev,
+        users: prev.users.map((u) =>
+          u.user_id === resetPasswordUser.user_id ? { ...u, password: cleanPass } : u
+        ),
+      }),
+      `Password untuk @${resetPasswordUser.username} berhasil diatur ulang.`
+    );
+    setResettingPassword(false);
+    if (ok) {
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(
+            `Username: ${resetPasswordUser.username}\nPassword: ${cleanPass}`
+          );
+          addToast('Info login baru disalin ke clipboard.', 'info');
+        }
+      } catch {
+        // Ignore clipboard errors
+      }
+      setResetPasswordUser(null);
+      setResetNewPassword('');
+      setShowResetPassword(false);
+    }
+  };
+
+  const hasAnySheetsConfig = Boolean(
+    db.pengaturanSekolah.gas_webapp_url || db.pengaturanSekolah.google_spreadsheet_id
+  );
+
   return (
     <div className="halaman">
       <div className="flex flex-wrap items-end justify-between gap-3 mb-5">
         <div>
           <h1 className="text-2xl sm:text-3xl text-[#0f4527]">Data siswa & akun</h1>
           <p className="text-sm text-[#55665a] mt-1">
-            Kelola data anak, hapus akun atau murid secara aman, dan hubungkan akun orang tua.
+            Menambah anak otomatis membuat dan menghubungkan akun Orang Tua dalam satu langkah.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {Boolean(db.pengaturanSekolah.gas_webapp_url) && (
+          {hasAnySheetsConfig && (
             <button
               type="button"
+              disabled={saving}
               onClick={pushToSheets}
               className="tbl polos kecil"
               title={
@@ -278,7 +457,7 @@ export const AdminSiswaUsersView: React.FC = () => {
 
       {subTab === 'siswa' ? (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-          {/* Form Tambah Siswa */}
+          {/* Form Tambah Siswa + Otomatis Buat Akun Orang Tua */}
           <form onSubmit={handleAddSiswa} className="lg:col-span-4 kartu space-y-3.5">
             <div className="judul-baris">
               <h2 className="text-lg text-[#0f4527] inline-flex items-center gap-2">
@@ -286,6 +465,42 @@ export const AdminSiswaUsersView: React.FC = () => {
                 <span>Tambah siswa</span>
               </h2>
             </div>
+
+            {lastCreatedCreds && (
+              <div className="rounded-2xl border border-[#9ec48e] bg-[#dcebd2]/55 p-3 space-y-2 text-xs">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-1.5 font-extrabold text-[#0f4527]">
+                    <CheckCircle2 className="w-4 h-4 text-[#176238] shrink-0" />
+                    <span>Akun Orang Tua Siap Dipakai!</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setLastCreatedCreds(null)}
+                    aria-label="Tutup info akun baru"
+                    className="text-[#55665a] hover:text-[#0f4527] cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div className="space-y-0.5 text-[#1d2b21]">
+                  <p className="m-0">
+                    Anak: <strong>{lastCreatedCreds.nama_anak}</strong> ({lastCreatedCreds.nama_lengkap})
+                  </p>
+                  <p className="m-0 font-mono-tabular">
+                    Username: <strong>{lastCreatedCreds.username}</strong> · Password:{' '}
+                    <strong>{lastCreatedCreds.password}</strong>
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleCopyCredentials(lastCreatedCreds)}
+                  className="tbl polos kecil w-full"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Salin Info Login</span>
+                </button>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -365,23 +580,141 @@ export const AdminSiswaUsersView: React.FC = () => {
               </div>
             </div>
 
-            <div>
-              <label htmlFor="s-ortu" className="block text-xs font-bold text-[#55665a] mb-1">
-                Akun orang tua
-              </label>
-              <select
-                id="s-ortu"
-                value={ortuUserId}
-                onChange={(e) => setOrtuUserId(e.target.value)}
-                className="isian-kontrol min-h-[40px] text-xs"
-              >
-                <option value="">Belum dihubungkan</option>
-                {parentUsers.map((u) => (
-                  <option key={u.user_id} value={u.user_id}>
-                    {u.nama_lengkap} (@{u.username})
-                  </option>
-                ))}
-              </select>
+            {/* Bagian Akun Orang Tua Otomatis vs Pilih yang Ada */}
+            <div className="rounded-2xl border border-[#d9d5c0] bg-[#fbf6e7] p-3 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-extrabold text-[#0f4527]">Akun Orang Tua</span>
+                <div className="inline-flex rounded-lg border border-[#d9d5c0] bg-white p-0.5 text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => setParentLinkMode('auto')}
+                    className={`px-2 py-1 rounded-md font-bold cursor-pointer transition-colors ${
+                      parentLinkMode === 'auto'
+                        ? 'bg-[#176238] text-white'
+                        : 'text-[#55665a] hover:text-[#0f4527]'
+                    }`}
+                  >
+                    Buat Otomatis
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setParentLinkMode('existing')}
+                    className={`px-2 py-1 rounded-md font-bold cursor-pointer transition-colors ${
+                      parentLinkMode === 'existing'
+                        ? 'bg-[#176238] text-white'
+                        : 'text-[#55665a] hover:text-[#0f4527]'
+                    }`}
+                  >
+                    Akun Ada
+                  </button>
+                </div>
+              </div>
+
+              {parentLinkMode === 'auto' ? (
+                <div className="space-y-2.5">
+                  <div>
+                    <label htmlFor="s-ortu-nama" className="block text-[11px] font-bold text-[#55665a] mb-1">
+                      Nama orang tua / wali (opsional)
+                    </label>
+                    <input
+                      id="s-ortu-nama"
+                      type="text"
+                      value={autoParentName}
+                      onChange={(e) => setAutoParentName(e.target.value)}
+                      placeholder={namaAnak.trim() ? `Otomatis: Wali ${namaAnak.trim()}` : 'Contoh: Ibu Aisyah'}
+                      className="isian-kontrol min-h-[38px] text-xs"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <div>
+                      <label htmlFor="s-ortu-user" className="block text-[11px] font-bold text-[#55665a] mb-1">
+                        Username ortu
+                      </label>
+                      <input
+                        id="s-ortu-user"
+                        type="text"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        value={autoParentUsername}
+                        onChange={(e) => {
+                          setUsernameEditedManually(true);
+                          setAutoParentUsername(
+                            e.target.value.replace(/^@+/, '').replace(/\s+/g, '').toLowerCase()
+                          );
+                        }}
+                        placeholder="Otomatis dari NIS"
+                        className="isian-kontrol min-h-[38px] text-xs font-mono-tabular"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="s-ortu-pass" className="block text-[11px] font-bold text-[#55665a] mb-1">
+                        Password awal
+                      </label>
+                      <div className="relative">
+                        <input
+                          id="s-ortu-pass"
+                          type={showAutoPassword ? 'text' : 'password'}
+                          required
+                          minLength={6}
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          spellCheck={false}
+                          value={autoParentPassword}
+                          onChange={(e) => setAutoParentPassword(e.target.value)}
+                          className="isian-kontrol min-h-[38px] text-xs pr-8 font-mono-tabular"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowAutoPassword((v) => !v)}
+                          aria-label={showAutoPassword ? 'Sembunyikan password' : 'Tampilkan password'}
+                          className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 rounded text-[#55665a] hover:text-[#0f4527] cursor-pointer"
+                        >
+                          {showAutoPassword ? (
+                            <EyeOff className="w-3.5 h-3.5" />
+                          ) : (
+                            <Eye className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label htmlFor="s-ortu-hp" className="block text-[11px] font-bold text-[#55665a] mb-1">
+                      Nomor HP orang tua (opsional)
+                    </label>
+                    <input
+                      id="s-ortu-hp"
+                      type="text"
+                      value={autoParentNoHp}
+                      onChange={(e) => setAutoParentNoHp(e.target.value)}
+                      placeholder="0812..."
+                      className="isian-kontrol min-h-[38px] text-xs"
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <label htmlFor="s-ortu" className="block text-[11px] font-bold text-[#55665a] mb-1">
+                    Pilih akun orang tua (misal saudara sekandung)
+                  </label>
+                  <select
+                    id="s-ortu"
+                    value={ortuUserId}
+                    onChange={(e) => setOrtuUserId(e.target.value)}
+                    className="isian-kontrol min-h-[38px] text-xs"
+                  >
+                    <option value="">Belum dihubungkan</option>
+                    {parentUsers.map((u) => (
+                      <option key={u.user_id} value={u.user_id}>
+                        {u.nama_lengkap} (@{u.username})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
 
             {isKelasLanjutan(db, kelasAktif) && (
@@ -404,8 +737,12 @@ export const AdminSiswaUsersView: React.FC = () => {
               </div>
             )}
 
-            <button type="submit" className="tbl w-full">
-              Simpan siswa
+            <button type="submit" disabled={submittingSiswa || saving} className="tbl w-full">
+              {submittingSiswa
+                ? 'Menyimpan...'
+                : parentLinkMode === 'auto'
+                ? 'Simpan Siswa & Buat Akun Ortu'
+                : 'Simpan siswa'}
             </button>
           </form>
 
@@ -427,7 +764,7 @@ export const AdminSiswaUsersView: React.FC = () => {
                 <button
                   type="button"
                   onClick={pushToSheets}
-                  disabled={db.siswa.length === 0}
+                  disabled={db.siswa.length === 0 || saving}
                   className="tbl polos kecil"
                   title="Kirim seluruh data siswa terbaru langsung ke Google Sheets"
                 >
@@ -506,19 +843,45 @@ export const AdminSiswaUsersView: React.FC = () => {
                           )}
                         </td>
                         <td>
-                          <select
-                            aria-label={`Akun orang tua untuk ${s.nama_anak}`}
-                            value={s.ortu_user_id}
-                            onChange={(e) => handleUpdateSiswaOrtu(s.siswa_id, e.target.value)}
-                            className="isian-kontrol min-h-[36px] py-1 text-xs max-w-[190px]"
-                          >
-                            <option value="">Belum dihubungkan</option>
-                            {parentUsers.map((u) => (
-                              <option key={u.user_id} value={u.user_id}>
-                                {u.nama_lengkap}
-                              </option>
-                            ))}
-                          </select>
+                          {(() => {
+                            const linkedParent = parentUsers.find((u) => u.user_id === s.ortu_user_id);
+                            return (
+                              <div className="space-y-1">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <select
+                                    aria-label={`Akun orang tua untuk ${s.nama_anak}`}
+                                    value={s.ortu_user_id}
+                                    onChange={(e) => handleUpdateSiswaOrtu(s.siswa_id, e.target.value)}
+                                    className="isian-kontrol min-h-[36px] py-1 text-xs max-w-[190px]"
+                                  >
+                                    <option value="">Belum dihubungkan</option>
+                                    {parentUsers.map((u) => (
+                                      <option key={u.user_id} value={u.user_id}>
+                                        {u.nama_lengkap} (@{u.username})
+                                      </option>
+                                    ))}
+                                  </select>
+                                  {!linkedParent && (
+                                    <button
+                                      type="button"
+                                      disabled={saving}
+                                      onClick={() => void handleQuickAutoCreateParent(s)}
+                                      className="tbl kecil"
+                                      title={`Buat otomatis & hubungkan akun orang tua untuk ${s.nama_anak}`}
+                                    >
+                                      <UserPlus className="w-3.5 h-3.5" />
+                                      <span>Buat Otomatis</span>
+                                    </button>
+                                  )}
+                                </div>
+                                {linkedParent && (
+                                  <p className="text-[11px] text-[#176238] font-mono-tabular m-0">
+                                    Terhubung: @{linkedParent.username}
+                                  </p>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td>
                           <select
@@ -607,7 +970,11 @@ export const AdminSiswaUsersView: React.FC = () => {
                   autoCorrect="off"
                   spellCheck={false}
                   value={username}
-                  onChange={(e) => setUsername(e.target.value)}
+                  onChange={(e) =>
+                    setUsername(
+                      e.target.value.replace(/^@+/, '').replace(/\s+/g, '').toLowerCase()
+                    )
+                  }
                   placeholder="ibu_siti"
                   className="isian-kontrol min-h-[40px] text-xs"
                 />
@@ -736,6 +1103,19 @@ export const AdminSiswaUsersView: React.FC = () => {
                                   className={`tbl polos kecil ${u.status_aktif ? '' : 'opacity-60'}`}
                                 >
                                   {u.status_aktif ? 'Aktif' : 'Nonaktif'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setResetPasswordUser(u);
+                                    setResetNewPassword('');
+                                    setShowResetPassword(false);
+                                  }}
+                                  aria-label={`Atur ulang password ${u.nama_lengkap}`}
+                                  title={`Atur ulang password ${u.nama_lengkap}`}
+                                  className="p-2 rounded-lg text-[#55665a] hover:text-[#0f4527] hover:bg-[#dcebd2]/70 cursor-pointer"
+                                >
+                                  <KeyRound className="w-4 h-4" />
                                 </button>
                                 {u.user_id !== currentUser?.user_id && (
                                   <button
@@ -898,6 +1278,90 @@ export const AdminSiswaUsersView: React.FC = () => {
           </div>
         </div>
       )}
+      {/* Modal Reset Password Pengguna */}
+      {resetPasswordUser && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0b1f14]/55 backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="judul-reset-password"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !resettingPassword) setResetPasswordUser(null);
+          }}
+        >
+          <form
+            onSubmit={handleResetUserPassword}
+            className="w-full max-w-md bg-[#fffdf7] rounded-[26px] border border-[#d9d5c0] p-6 shadow-2xl space-y-4"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <h2 id="judul-reset-password" className="text-xl text-[#0f4527] inline-flex items-center gap-2">
+                <KeyRound className="w-5 h-5 text-[#176238]" />
+                <span>Atur ulang password</span>
+              </h2>
+              <button
+                type="button"
+                disabled={resettingPassword}
+                onClick={() => setResetPasswordUser(null)}
+                aria-label="Tutup dialog"
+                className="w-9 h-9 rounded-full flex items-center justify-center text-[#55665a] hover:bg-[#dcebd2] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-[#dcebd2]/45 border border-[#9ec48e] text-sm text-[#1d2b21] space-y-1">
+              <p className="font-bold text-[#0f4527] m-0">{resetPasswordUser.nama_lengkap}</p>
+              <p className="text-xs text-[#55665a] font-mono-tabular m-0">
+                Username: <strong>{resetPasswordUser.username}</strong> · Peran: {resetPasswordUser.role}
+              </p>
+            </div>
+
+            <label className="block">
+              <span className="block font-extrabold text-xs mb-1 text-[#1d2b21]">
+                Password baru (min. 6 karakter)
+              </span>
+              <div className="relative">
+                <input
+                  type={showResetPassword ? 'text' : 'password'}
+                  required
+                  minLength={6}
+                  autoComplete="new-password"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  value={resetNewPassword}
+                  onChange={(e) => setResetNewPassword(e.target.value)}
+                  placeholder="Masukkan password baru"
+                  className="isian-kontrol pr-11"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowResetPassword((v) => !v)}
+                  aria-label={showResetPassword ? 'Sembunyikan password' : 'Tampilkan password'}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-[#55665a] hover:text-[#0f4527] hover:bg-[#dcebd2]/50 cursor-pointer"
+                >
+                  {showResetPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </label>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                disabled={resettingPassword}
+                onClick={() => setResetPasswordUser(null)}
+                className="tbl polos"
+              >
+                Batal
+              </button>
+              <button type="submit" disabled={resettingPassword || saving} className="tbl">
+                {resettingPassword ? 'Menyimpan...' : 'Simpan Password Baru'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {showDapodikModal && (
         <DapodikImportModal onClose={() => setShowDapodikModal(false)} />
       )}

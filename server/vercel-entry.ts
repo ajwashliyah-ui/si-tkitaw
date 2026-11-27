@@ -10,6 +10,19 @@ export function createVercelHandler(fixedPath?: string) {
       const qIdx = rawUrl.indexOf('?');
       const qs = qIdx !== -1 ? rawUrl.slice(qIdx) : '';
       req.url = `${fixedPath}${qs}`;
+    } else if (req.url) {
+      try {
+        const parsed = new URL(req.url, 'http://localhost');
+        const rewrittenPath = parsed.searchParams.get('__path');
+        if (rewrittenPath !== null) {
+          parsed.searchParams.delete('__path');
+          const cleanSubPath = rewrittenPath.replace(/^\/+/, '');
+          const qs = parsed.searchParams.toString();
+          req.url = `/api/${cleanSubPath}${qs ? `?${qs}` : ''}`;
+        }
+      } catch {
+        // Keep original req.url on malformed URL
+      }
     }
     return app(req as any, res as any);
   };

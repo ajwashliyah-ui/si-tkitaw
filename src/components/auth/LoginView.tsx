@@ -9,7 +9,7 @@ interface LoginViewProps {
 }
 
 export const LoginView: React.FC<LoginViewProps> = ({ isOpen, onClose }) => {
-  const { login, setupAdmin, adminClaimed } = useApp();
+  const { login, setupAdmin, adminClaimed, refreshSchoolInfo } = useApp();
   const [mode, setMode] = useState<'login' | 'setup_admin'>('login');
 
   // Login state
@@ -29,6 +29,13 @@ export const LoginView: React.FC<LoginViewProps> = ({ isOpen, onClose }) => {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
+    if (isOpen) {
+      setError('');
+      void refreshSchoolInfo();
+    }
+  }, [isOpen, refreshSchoolInfo]);
+
+  useEffect(() => {
     if (adminClaimed && mode === 'setup_admin') {
       setMode('login');
       setError('');
@@ -46,12 +53,14 @@ export const LoginView: React.FC<LoginViewProps> = ({ isOpen, onClose }) => {
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    if (!username.trim() || !password) {
+    const cleanUser = username.trim().replace(/^@+/, '').toLowerCase();
+    const cleanPassword = password.replace(/[\r\n]+/g, '');
+    if (!cleanUser || !cleanPassword) {
       setError('Mohon isi username dan password.');
       return;
     }
     setSubmitting(true);
-    const res = await login(username.trim(), password);
+    const res = await login(cleanUser, cleanPassword);
     setSubmitting(false);
     if (!res.ok) {
       setError(res.error || 'Username atau password tidak sesuai.');
@@ -61,7 +70,9 @@ export const LoginView: React.FC<LoginViewProps> = ({ isOpen, onClose }) => {
   const handleSetupAdminSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    const cleanUser = adminUsername.trim().toLowerCase();
+    const cleanUser = adminUsername.trim().replace(/^@+/, '').replace(/\s+/g, '').toLowerCase();
+    const cleanPass = adminPassword.replace(/[\r\n]+/g, '');
+    const cleanConfirm = adminPasswordConfirm.replace(/[\r\n]+/g, '');
     if (!adminNama.trim()) {
       setError('Mohon isi nama lengkap Admin / Kepala Sekolah.');
       return;
@@ -70,11 +81,11 @@ export const LoginView: React.FC<LoginViewProps> = ({ isOpen, onClose }) => {
       setError('Username 3–32 karakter: huruf kecil, angka, titik, garis bawah, atau strip.');
       return;
     }
-    if (adminPassword.length < 6) {
+    if (cleanPass.length < 6) {
       setError('Password minimal 6 karakter.');
       return;
     }
-    if (adminPassword !== adminPasswordConfirm) {
+    if (cleanPass !== cleanConfirm) {
       setError('Konfirmasi password belum sama.');
       return;
     }
@@ -82,7 +93,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ isOpen, onClose }) => {
     setSubmitting(true);
     const res = await setupAdmin({
       username: cleanUser,
-      password: adminPassword,
+      password: cleanPass,
       nama_lengkap: adminNama.trim(),
       no_hp: adminNoHp.trim(),
     });
@@ -143,8 +154,11 @@ export const LoginView: React.FC<LoginViewProps> = ({ isOpen, onClose }) => {
                 autoCorrect="off"
                 spellCheck={false}
                 value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="Masukkan username akun"
+                onChange={(e) => {
+                  setUsername(e.target.value);
+                  if (error) setError('');
+                }}
+                placeholder="Masukkan username akun (mis. gurua)"
                 className="isian-kontrol"
               />
             </label>
@@ -160,7 +174,10 @@ export const LoginView: React.FC<LoginViewProps> = ({ isOpen, onClose }) => {
                   autoCorrect="off"
                   spellCheck={false}
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    if (error) setError('');
+                  }}
                   placeholder="Masukkan password"
                   className="isian-kontrol pr-11"
                 />
@@ -251,10 +268,20 @@ export const LoginView: React.FC<LoginViewProps> = ({ isOpen, onClose }) => {
                   autoCorrect="off"
                   spellCheck={false}
                   value={adminUsername}
-                  onChange={(e) => setAdminUsername(e.target.value)}
+                  onChange={(e) => {
+                    const sanitized = e.target.value
+                      .replace(/^@+/, '')
+                      .replace(/\s+/g, '')
+                      .toLowerCase();
+                    setAdminUsername(sanitized);
+                    if (error) setError('');
+                  }}
                   placeholder="Contoh: admin_sekolah"
                   className="isian-kontrol"
                 />
+                <span className="block text-[11px] text-[#55665a] mt-1">
+                  Tanpa spasi/simbol @ · digunakan saat masuk
+                </span>
               </label>
 
               <label className="block">
@@ -286,7 +313,10 @@ export const LoginView: React.FC<LoginViewProps> = ({ isOpen, onClose }) => {
                     autoCorrect="off"
                     spellCheck={false}
                     value={adminPassword}
-                    onChange={(e) => setAdminPassword(e.target.value)}
+                    onChange={(e) => {
+                      setAdminPassword(e.target.value);
+                      if (error) setError('');
+                    }}
                     placeholder="Minimal 6 karakter"
                     className="isian-kontrol pr-11"
                   />
@@ -314,7 +344,10 @@ export const LoginView: React.FC<LoginViewProps> = ({ isOpen, onClose }) => {
                   autoCorrect="off"
                   spellCheck={false}
                   value={adminPasswordConfirm}
-                  onChange={(e) => setAdminPasswordConfirm(e.target.value)}
+                  onChange={(e) => {
+                    setAdminPasswordConfirm(e.target.value);
+                    if (error) setError('');
+                  }}
                   placeholder="Ketik ulang password"
                   className="isian-kontrol"
                 />

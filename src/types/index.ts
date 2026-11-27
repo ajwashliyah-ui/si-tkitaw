@@ -35,6 +35,7 @@ export interface PengaturanSekolah {
   gas_sync_key?: string;
   google_spreadsheet_id?: string;
   google_spreadsheet_url?: string;
+  auto_sync_sheets?: boolean;
   admin_claimed?: boolean;
 }
 
